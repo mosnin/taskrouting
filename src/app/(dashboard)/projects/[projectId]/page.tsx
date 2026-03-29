@@ -1,4 +1,4 @@
-import { getSession } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { getProject } from "@/actions/project";
 import { listTasks } from "@/actions/task";
@@ -14,8 +14,7 @@ export default async function ProjectDetailPage({
   params,
 }: ProjectDetailPageProps) {
   const { projectId } = await params;
-  const session = await getSession();
-  if (!session?.user) redirect("/sign-in");
+  const user = await requireAuth();
 
   const workspaces = await getUserWorkspaces();
   if (!workspaces.length) redirect("/onboarding");
@@ -33,7 +32,7 @@ export default async function ProjectDetailPage({
       tasks={tasks}
       queues={queues}
       workspaceId={workspace.id}
-      userId={session.user.id}
+      userId={user.id}
     />
   );
 }

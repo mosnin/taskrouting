@@ -1,5 +1,6 @@
-import { prisma } from "./prisma";
-import type { ActorType } from "@prisma/client";
+import { db } from "@/lib/db";
+import { runLogs } from "@/lib/db/schema";
+import type { ActorType } from "@/lib/db/schema";
 
 export type EventType =
   | "task_created"
@@ -50,17 +51,18 @@ const subscribers = new Map<string, Set<Subscriber>>();
 
 /** Emit a domain event: writes to RunLog and notifies SSE subscribers */
 export async function emitEvent(params: EmitEventParams) {
-  const log = await prisma.runLog.create({
-    data: {
+  const [log] = await db
+    .insert(runLogs)
+    .values({
       workspaceId: params.workspaceId,
       eventType: params.eventType,
       actorType: params.actorType,
       actorId: params.actorId,
       entityType: params.entityType,
       entityId: params.entityId,
-      metadata: (params.metadata as any) ?? undefined,
-    },
-  });
+      metadata: params.metadata ?? undefined,
+    })
+    .returning();
 
   // Notify workspace subscribers
   const subs = subscribers.get(params.workspaceId);

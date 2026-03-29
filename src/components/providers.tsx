@@ -1,6 +1,6 @@
 "use client";
 
-import { SessionProvider } from "next-auth/react";
+import { ClerkProvider } from "@clerk/nextjs";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { ToastProvider } from "@/components/ui/toast";
 
@@ -10,12 +10,12 @@ interface ProvidersProps {
 
 export function Providers({ children }: ProvidersProps) {
   return (
-    <SessionProvider>
+    <ClerkProvider>
       <TooltipProvider delayDuration={0}>
         <ToastProvider>
           {children}
         </ToastProvider>
       </TooltipProvider>
-    </SessionProvider>
+    </ClerkProvider>
   );
 }

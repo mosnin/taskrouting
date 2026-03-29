@@ -16,8 +16,8 @@ const createAgentSchema = z.object({
 
 export async function createAgent(data: z.infer<typeof createAgentSchema>) {
   const parsed = createAgentSchema.parse(data);
-  const { session } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN"]);
-  const agent = await agentService.createAgent(parsed.workspaceId, session.user.id, {
+  const { user } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN"]);
+  const agent = await agentService.createAgent(parsed.workspaceId, user.id, {
     name: parsed.name,
     description: parsed.description,
     capabilities: parsed.capabilities,
@@ -37,9 +37,9 @@ const createTokenSchema = z.object({
 
 export async function createAgentToken(data: z.infer<typeof createTokenSchema>) {
   const parsed = createTokenSchema.parse(data);
-  const { session } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN"]);
+  const { user } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN"]);
   // Returns { token: AgentToken, rawToken: string }
-  const result = await tokenService.createToken(parsed.agentId, session.user.id, {
+  const result = await tokenService.createToken(parsed.agentId, user.id, {
     name: parsed.name,
     scopes: parsed.scopes,
     expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : undefined,
@@ -49,8 +49,8 @@ export async function createAgentToken(data: z.infer<typeof createTokenSchema>) 
 }
 
 export async function revokeAgentToken(tokenId: string, workspaceId: string) {
-  const { session } = await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN"]);
-  await tokenService.revokeToken(tokenId, session.user.id);
+  const { user } = await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN"]);
+  await tokenService.revokeToken(tokenId, user.id);
   revalidatePath("/agents");
 }
 

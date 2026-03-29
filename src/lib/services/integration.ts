@@ -1,13 +1,16 @@
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { integrationConnections, workflowTemplates } from "@/lib/db/schema";
+import type { IntegrationProvider } from "@/lib/db/schema";
+import { eq, and } from "drizzle-orm";
 import { encrypt, decrypt } from "@/lib/crypto";
 import { emitEvent } from "@/lib/events";
 import { getAdapter, getAllProviders } from "@/lib/integrations/registry";
-import type { IntegrationProvider } from "@prisma/client";
 
 export async function getWorkspaceIntegrations(workspaceId: string) {
-  const connections = await prisma.integrationConnection.findMany({
-    where: { workspaceId },
-  });
+  const connections = await db
+    .select()
+    .from(integrationConnections)
+    .where(eq(integrationConnections.workspaceId, workspaceId));
 
   const providers = getAllProviders();
   return providers.map((p) => {
@@ -31,11 +34,27 @@ export async function initiateConnection(
   if (!adapter) throw new Error(`Unknown provider: ${provider}`);
 
   // Upsert connection record
-  await prisma.integrationConnection.upsert({
-    where: { workspaceId_provider: { workspaceId, provider } },
-    update: { status: "CONNECTING" },
-    create: { workspaceId, provider, status: "CONNECTING" },
-  });
+  const [existing] = await db
+    .select()
+    .from(integrationConnections)
+    .where(
+      and(
+        eq(integrationConnections.workspaceId, workspaceId),
+        eq(integrationConnections.provider, provider)
+      )
+    )
+    .limit(1);
+
+  if (existing) {
+    await db
+      .update(integrationConnections)
+      .set({ status: "CONNECTING", updatedAt: new Date() })
+      .where(eq(integrationConnections.id, existing.id));
+  } else {
+    await db
+      .insert(integrationConnections)
+      .values({ workspaceId, provider, status: "CONNECTING" });
+  }
 
   return adapter.getAuthUrl(workspaceId, redirectUrl);
 }
@@ -53,15 +72,22 @@ export async function completeConnection(
 
   const encryptedCreds = encrypt(result.credentials);
 
-  const connection = await prisma.integrationConnection.update({
-    where: { workspaceId_provider: { workspaceId, provider } },
-    data: {
+  const [connection] = await db
+    .update(integrationConnections)
+    .set({
       status: "HEALTHY",
       encryptedCredentials: encryptedCreds,
       externalAccountId: result.accountId,
       externalAccountName: result.accountName,
-    },
-  });
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(integrationConnections.workspaceId, workspaceId),
+        eq(integrationConnections.provider, provider)
+      )
+    )
+    .returning();
 
   await emitEvent({
     workspaceId,
@@ -76,18 +102,28 @@ export async function completeConnection(
   // Create default workflow templates
   const recipes = adapter.getDefaultRecipes();
   for (const recipe of recipes) {
-    await prisma.workflowTemplate.upsert({
-      where: { workspaceId_name: { workspaceId, name: recipe.name } },
-      update: {},
-      create: {
+    // Upsert workflow template
+    const [existingTemplate] = await db
+      .select()
+      .from(workflowTemplates)
+      .where(
+        and(
+          eq(workflowTemplates.workspaceId, workspaceId),
+          eq(workflowTemplates.name, recipe.name)
+        )
+      )
+      .limit(1);
+
+    if (!existingTemplate) {
+      await db.insert(workflowTemplates).values({
         workspaceId,
         name: recipe.name,
         description: recipe.description,
         trigger: recipe.trigger as any,
         actions: recipe.action as any,
         enabled: true,
-      },
-    });
+      });
+    }
   }
 
   return connection;
@@ -98,15 +134,23 @@ export async function disconnectIntegration(
   provider: IntegrationProvider,
   userId: string
 ) {
-  const connection = await prisma.integrationConnection.update({
-    where: { workspaceId_provider: { workspaceId, provider } },
-    data: {
+  const [connection] = await db
+    .update(integrationConnections)
+    .set({
       status: "DISCONNECTED",
       encryptedCredentials: null,
       externalAccountId: null,
       externalAccountName: null,
-    },
-  });
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(integrationConnections.workspaceId, workspaceId),
+        eq(integrationConnections.provider, provider)
+      )
+    )
+    .returning();
+  if (!connection) throw new Error("Integration connection not found");
 
   await emitEvent({
     workspaceId,
@@ -125,9 +169,16 @@ export async function getDecryptedCredentials(
   workspaceId: string,
   provider: IntegrationProvider
 ): Promise<string | null> {
-  const connection = await prisma.integrationConnection.findUnique({
-    where: { workspaceId_provider: { workspaceId, provider } },
-  });
+  const [connection] = await db
+    .select()
+    .from(integrationConnections)
+    .where(
+      and(
+        eq(integrationConnections.workspaceId, workspaceId),
+        eq(integrationConnections.provider, provider)
+      )
+    )
+    .limit(1);
   if (!connection?.encryptedCredentials) return null;
   return decrypt(connection.encryptedCredentials);
 }

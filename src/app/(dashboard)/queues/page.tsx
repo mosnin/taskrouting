@@ -1,12 +1,11 @@
-import { getSession } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { listQueues } from "@/actions/queue";
 import { getUserWorkspaces } from "@/actions/workspace";
 import { QueuesPageClient } from "./queues-client";
 
 export default async function QueuesPage() {
-  const session = await getSession();
-  if (!session?.user) redirect("/sign-in");
+  const user = await requireAuth();
 
   const workspaces = await getUserWorkspaces();
   if (!workspaces.length) redirect("/onboarding");
@@ -18,7 +17,7 @@ export default async function QueuesPage() {
     <QueuesPageClient
       queues={queues}
       workspaceId={workspace.id}
-      userId={session.user.id}
+      userId={user.id}
     />
   );
 }

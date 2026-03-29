@@ -1,4 +1,4 @@
-import type { IntegrationProvider } from "@prisma/client";
+import type { IntegrationProvider } from "@/lib/db/schema";
 import type { ProviderAdapter, ProviderInfo } from "./types";
 import { githubAdapter } from "./github";
 import { slackAdapter } from "./slack";

@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { getAuthUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { tasks } from "@/lib/db/schema";
 import { emitEvent } from "@/lib/events";
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = await getAuthUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await request.json();
   const { workspaceId, projectId, taskSheetId, title, description, priority, queueId } = body;
 
-  const task = await prisma.task.create({
-    data: {
+  const [task] = await db
+    .insert(tasks)
+    .values({
       workspaceId,
       projectId,
       taskSheetId: taskSheetId || null,
@@ -21,14 +22,14 @@ export async function POST(request: NextRequest) {
       priority: priority || "MEDIUM",
       queueId: queueId || null,
       status: "TODO",
-    },
-  });
+    })
+    .returning();
 
   await emitEvent({
     workspaceId,
     eventType: "task_created",
     actorType: "USER",
-    actorId: session.user.id,
+    actorId: user.id,
     entityType: "Task",
     entityId: task.id,
     metadata: { title: task.title },

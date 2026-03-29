@@ -1,4 +1,6 @@
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { claims, agents, tasks } from "@/lib/db/schema";
+import { eq, and, desc } from "drizzle-orm";
 import { emitEvent } from "@/lib/events";
 
 export async function claimTask(
@@ -7,9 +9,12 @@ export async function claimTask(
   queueId: string
 ) {
   // Verify the agent exists and has access to this queue
-  const agent = await prisma.agent.findUniqueOrThrow({
-    where: { id: agentId },
-  });
+  const [agent] = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1);
+  if (!agent) throw new Error("Agent not found");
 
   if (
     agent.allowedQueueIds.length > 0 &&
@@ -19,9 +24,12 @@ export async function claimTask(
   }
 
   // Verify the task exists and is in this queue
-  const task = await prisma.task.findUniqueOrThrow({
-    where: { id: taskId },
-  });
+  const [task] = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1);
+  if (!task) throw new Error("Task not found");
 
   if (task.queueId !== queueId) {
     throw new Error("Task is not in the specified queue");
@@ -41,32 +49,39 @@ export async function claimTask(
   }
 
   // Check no active claim exists on this task
-  const existingClaim = await prisma.claim.findFirst({
-    where: { taskId, status: "ACTIVE" },
-  });
+  const [existingClaim] = await db
+    .select()
+    .from(claims)
+    .where(and(eq(claims.taskId, taskId), eq(claims.status, "ACTIVE")))
+    .limit(1);
 
   if (existingClaim) {
     throw new Error("Task already has an active claim");
   }
 
-  const [claim] = await prisma.$transaction([
-    prisma.claim.create({
-      data: {
+  const claim = await db.transaction(async (tx) => {
+    const [newClaim] = await tx
+      .insert(claims)
+      .values({
         agentId,
         taskId,
         queueId,
         status: "ACTIVE",
-      },
-    }),
-    prisma.task.update({
-      where: { id: taskId },
-      data: {
+      })
+      .returning();
+
+    await tx
+      .update(tasks)
+      .set({
         status: "IN_PROGRESS",
         ownerType: "AGENT",
         ownerId: agentId,
-      },
-    }),
-  ]);
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, taskId));
+
+    return newClaim;
+  });
 
   await emitEvent({
     workspaceId: agent.workspaceId,
@@ -82,10 +97,19 @@ export async function claimTask(
 }
 
 export async function releaseClaim(claimId: string, agentId: string) {
-  const claim = await prisma.claim.findUniqueOrThrow({
-    where: { id: claimId },
-    include: { agent: { select: { workspaceId: true } } },
-  });
+  const results = await db
+    .select({
+      claim: claims,
+      agentWorkspaceId: agents.workspaceId,
+    })
+    .from(claims)
+    .innerJoin(agents, eq(claims.agentId, agents.id))
+    .where(eq(claims.id, claimId))
+    .limit(1);
+
+  const result = results[0];
+  if (!result) throw new Error("Claim not found");
+  const claim = result.claim;
 
   if (claim.agentId !== agentId) {
     throw new Error("Only the claiming agent can release a claim");
@@ -95,23 +119,28 @@ export async function releaseClaim(claimId: string, agentId: string) {
     throw new Error("Only active claims can be released");
   }
 
-  const [updatedClaim] = await prisma.$transaction([
-    prisma.claim.update({
-      where: { id: claimId },
-      data: { status: "RELEASED", releasedAt: new Date() },
-    }),
-    prisma.task.update({
-      where: { id: claim.taskId },
-      data: {
+  const updatedClaim = await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(claims)
+      .set({ status: "RELEASED", releasedAt: new Date(), updatedAt: new Date() })
+      .where(eq(claims.id, claimId))
+      .returning();
+
+    await tx
+      .update(tasks)
+      .set({
         status: "TODO",
         ownerType: "UNASSIGNED",
         ownerId: null,
-      },
-    }),
-  ]);
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, claim.taskId));
+
+    return updated;
+  });
 
   await emitEvent({
-    workspaceId: claim.agent.workspaceId,
+    workspaceId: result.agentWorkspaceId,
     eventType: "task_released",
     actorType: "AGENT",
     actorId: agentId,
@@ -124,10 +153,19 @@ export async function releaseClaim(claimId: string, agentId: string) {
 }
 
 export async function completeClaim(claimId: string, agentId: string) {
-  const claim = await prisma.claim.findUniqueOrThrow({
-    where: { id: claimId },
-    include: { agent: { select: { workspaceId: true } } },
-  });
+  const results = await db
+    .select({
+      claim: claims,
+      agentWorkspaceId: agents.workspaceId,
+    })
+    .from(claims)
+    .innerJoin(agents, eq(claims.agentId, agents.id))
+    .where(eq(claims.id, claimId))
+    .limit(1);
+
+  const result = results[0];
+  if (!result) throw new Error("Claim not found");
+  const claim = result.claim;
 
   if (claim.agentId !== agentId) {
     throw new Error("Only the claiming agent can complete a claim");
@@ -137,19 +175,23 @@ export async function completeClaim(claimId: string, agentId: string) {
     throw new Error("Only active claims can be completed");
   }
 
-  const [updatedClaim] = await prisma.$transaction([
-    prisma.claim.update({
-      where: { id: claimId },
-      data: { status: "COMPLETED" },
-    }),
-    prisma.task.update({
-      where: { id: claim.taskId },
-      data: { status: "DONE" },
-    }),
-  ]);
+  const updatedClaim = await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(claims)
+      .set({ status: "COMPLETED", updatedAt: new Date() })
+      .where(eq(claims.id, claimId))
+      .returning();
+
+    await tx
+      .update(tasks)
+      .set({ status: "DONE", updatedAt: new Date() })
+      .where(eq(tasks.id, claim.taskId));
+
+    return updated;
+  });
 
   await emitEvent({
-    workspaceId: claim.agent.workspaceId,
+    workspaceId: result.agentWorkspaceId,
     eventType: "task_completed",
     actorType: "AGENT",
     actorId: agentId,
@@ -162,12 +204,18 @@ export async function completeClaim(claimId: string, agentId: string) {
 }
 
 export async function getActiveClaims(agentId: string) {
-  return prisma.claim.findMany({
-    where: { agentId, status: "ACTIVE" },
-    include: {
-      task: true,
-      queue: true,
-    },
-    orderBy: { createdAt: "desc" },
-  });
+  const results = await db
+    .select({
+      claim: claims,
+      task: tasks,
+    })
+    .from(claims)
+    .innerJoin(tasks, eq(claims.taskId, tasks.id))
+    .where(and(eq(claims.agentId, agentId), eq(claims.status, "ACTIVE")))
+    .orderBy(desc(claims.createdAt));
+
+  return results.map((r) => ({
+    ...r.claim,
+    task: r.task,
+  }));
 }

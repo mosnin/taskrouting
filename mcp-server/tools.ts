@@ -1,5 +1,17 @@
-import { z } from "zod";
-import { prisma, type AgentContext, hasScope } from "./auth.js";
+import { eq, and, inArray, or, ilike, desc, isNull, sql } from "drizzle-orm";
+import { type AgentContext, hasScope } from "./auth.js";
+import { db } from "./db.js";
+import {
+  queues,
+  tasks,
+  claims,
+  runLogs,
+  artifacts,
+  memoryNodes,
+  approvals,
+  taskComments,
+  agents,
+} from "../src/lib/db/schema.js";
 
 // Tool definitions for the MCP server
 export function getToolDefinitions() {
@@ -146,29 +158,41 @@ export async function executeTool(
     case "list_available_queues": {
       if (!hasScope(ctx, "queues:read")) return text("Permission denied: missing queues:read scope");
 
-      const where: any = { workspaceId: ctx.workspaceId, deletedAt: null };
+      const conditions = [
+        eq(queues.workspaceId, ctx.workspaceId),
+        isNull(queues.deletedAt),
+      ];
       if (ctx.allowedQueueIds.length > 0) {
-        where.id = { in: ctx.allowedQueueIds };
+        conditions.push(inArray(queues.id, ctx.allowedQueueIds));
       }
 
-      const queues = await prisma.queue.findMany({
-        where,
-        include: {
-          _count: {
-            select: {
-              tasks: { where: { status: { in: ["TODO", "BACKLOG"] }, deletedAt: null } },
-            },
-          },
-        },
-      });
+      const queueRows = await db
+        .select()
+        .from(queues)
+        .where(and(...conditions));
 
-      const result = queues.map((q) => ({
-        id: q.id,
-        name: q.name,
-        description: q.description,
-        requiredCapabilities: q.requiredCapabilities,
-        availableTasks: q._count.tasks,
-      }));
+      // Get task counts per queue
+      const result = await Promise.all(
+        queueRows.map(async (q) => {
+          const taskCountResult = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(tasks)
+            .where(
+              and(
+                eq(tasks.queueId, q.id),
+                inArray(tasks.status, ["TODO", "BACKLOG"]),
+                isNull(tasks.deletedAt)
+              )
+            );
+          return {
+            id: q.id,
+            name: q.name,
+            description: q.description,
+            requiredCapabilities: q.requiredCapabilities,
+            availableTasks: Number(taskCountResult[0]?.count ?? 0),
+          };
+        })
+      );
 
       return text(JSON.stringify(result, null, 2));
     }
@@ -184,17 +208,28 @@ export async function executeTool(
       }
 
       // Check for existing active claim
-      const existingClaim = await prisma.claim.findFirst({
-        where: { taskId, status: "ACTIVE" },
-      });
+      const [existingClaim] = await db
+        .select()
+        .from(claims)
+        .where(and(eq(claims.taskId, taskId), eq(claims.status, "ACTIVE")))
+        .limit(1);
       if (existingClaim) {
         return text("Task already has an active claim");
       }
 
       // Verify task is in the queue and claimable
-      const task = await prisma.task.findFirst({
-        where: { id: taskId, queueId, status: { in: ["TODO", "BACKLOG"] }, deletedAt: null },
-      });
+      const [task] = await db
+        .select()
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.id, taskId),
+            eq(tasks.queueId, queueId),
+            inArray(tasks.status, ["TODO", "BACKLOG"]),
+            isNull(tasks.deletedAt)
+          )
+        )
+        .limit(1);
       if (!task) {
         return text("Task not found or not claimable");
       }
@@ -210,25 +245,24 @@ export async function executeTool(
       }
 
       // Create claim and update task
-      const claim = await prisma.claim.create({
-        data: { agentId: ctx.agentId, taskId, queueId },
-      });
+      const [claim] = await db
+        .insert(claims)
+        .values({ agentId: ctx.agentId, taskId, queueId })
+        .returning();
 
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { status: "IN_PROGRESS", ownerType: "AGENT", ownerId: ctx.agentId },
-      });
+      await db
+        .update(tasks)
+        .set({ status: "IN_PROGRESS", ownerType: "AGENT", ownerId: ctx.agentId })
+        .where(eq(tasks.id, taskId));
 
-      await prisma.runLog.create({
-        data: {
-          workspaceId: ctx.workspaceId,
-          eventType: "task_claimed",
-          actorType: "AGENT",
-          actorId: ctx.agentId,
-          entityType: "Task",
-          entityId: taskId,
-          metadata: { claimId: claim.id, queueId },
-        },
+      await db.insert(runLogs).values({
+        workspaceId: ctx.workspaceId,
+        eventType: "task_claimed",
+        actorType: "AGENT",
+        actorId: ctx.agentId,
+        entityType: "Task",
+        entityId: taskId,
+        metadata: { claimId: claim.id, queueId },
       });
 
       return text(JSON.stringify({ claimId: claim.id, taskId, status: "claimed" }));
@@ -240,35 +274,41 @@ export async function executeTool(
       const { taskId, status } = args as { taskId: string; status: string };
 
       // Verify agent has active claim
-      const claim = await prisma.claim.findFirst({
-        where: { taskId, agentId: ctx.agentId, status: "ACTIVE" },
-      });
+      const [claim] = await db
+        .select()
+        .from(claims)
+        .where(
+          and(
+            eq(claims.taskId, taskId),
+            eq(claims.agentId, ctx.agentId),
+            eq(claims.status, "ACTIVE")
+          )
+        )
+        .limit(1);
       if (!claim) {
         return text("No active claim found for this task");
       }
 
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { status: status as any },
-      });
+      await db
+        .update(tasks)
+        .set({ status: status as any })
+        .where(eq(tasks.id, taskId));
 
       if (status === "DONE") {
-        await prisma.claim.update({
-          where: { id: claim.id },
-          data: { status: "COMPLETED", releasedAt: new Date() },
-        });
+        await db
+          .update(claims)
+          .set({ status: "COMPLETED", releasedAt: new Date() })
+          .where(eq(claims.id, claim.id));
       }
 
-      await prisma.runLog.create({
-        data: {
-          workspaceId: ctx.workspaceId,
-          eventType: status === "DONE" ? "task_completed" : "task_updated",
-          actorType: "AGENT",
-          actorId: ctx.agentId,
-          entityType: "Task",
-          entityId: taskId,
-          metadata: { status, claimId: claim.id },
-        },
+      await db.insert(runLogs).values({
+        workspaceId: ctx.workspaceId,
+        eventType: status === "DONE" ? "task_completed" : "task_updated",
+        actorType: "AGENT",
+        actorId: ctx.agentId,
+        entityType: "Task",
+        entityId: taskId,
+        metadata: { status, claimId: claim.id },
       });
 
       return text(JSON.stringify({ taskId, status: "updated", newStatus: status }));
@@ -279,27 +319,26 @@ export async function executeTool(
 
       const { taskId, name, type, content, url } = args as any;
 
-      const artifact = await prisma.artifact.create({
-        data: {
+      const [artifact] = await db
+        .insert(artifacts)
+        .values({
           taskId,
           agentId: ctx.agentId,
           name,
           type,
           content,
           url: url || null,
-        },
-      });
+        })
+        .returning();
 
-      await prisma.runLog.create({
-        data: {
-          workspaceId: ctx.workspaceId,
-          eventType: "artifact_submitted",
-          actorType: "AGENT",
-          actorId: ctx.agentId,
-          entityType: "Artifact",
-          entityId: artifact.id,
-          metadata: { taskId, name, type },
-        },
+      await db.insert(runLogs).values({
+        workspaceId: ctx.workspaceId,
+        eventType: "artifact_submitted",
+        actorType: "AGENT",
+        actorId: ctx.agentId,
+        entityType: "Artifact",
+        entityId: artifact.id,
+        metadata: { taskId, name, type },
       });
 
       return text(JSON.stringify({ artifactId: artifact.id, status: "submitted" }));
@@ -310,8 +349,9 @@ export async function executeTool(
 
       const { title, content, type, projectId, taskId } = args as any;
 
-      const node = await prisma.memoryNode.create({
-        data: {
+      const [node] = await db
+        .insert(memoryNodes)
+        .values({
           workspaceId: ctx.workspaceId,
           title,
           content,
@@ -321,19 +361,17 @@ export async function executeTool(
           agentId: ctx.agentId,
           createdBy: ctx.agentId,
           updatedBy: ctx.agentId,
-        },
-      });
+        })
+        .returning();
 
-      await prisma.runLog.create({
-        data: {
-          workspaceId: ctx.workspaceId,
-          eventType: "memory_created",
-          actorType: "AGENT",
-          actorId: ctx.agentId,
-          entityType: "MemoryNode",
-          entityId: node.id,
-          metadata: { title, type },
-        },
+      await db.insert(runLogs).values({
+        workspaceId: ctx.workspaceId,
+        eventType: "memory_created",
+        actorType: "AGENT",
+        actorId: ctx.agentId,
+        entityType: "MemoryNode",
+        entityId: node.id,
+        metadata: { title, type },
       });
 
       return text(JSON.stringify({ nodeId: node.id, status: "created" }));
@@ -344,25 +382,24 @@ export async function executeTool(
 
       const { nodeId, title, content } = args as any;
 
-      const node = await prisma.memoryNode.update({
-        where: { id: nodeId },
-        data: {
+      const [node] = await db
+        .update(memoryNodes)
+        .set({
           ...(title ? { title } : {}),
           ...(content ? { content } : {}),
           updatedBy: ctx.agentId,
-          version: { increment: 1 },
-        },
-      });
+          version: sql`${memoryNodes.version} + 1`,
+        })
+        .where(eq(memoryNodes.id, nodeId))
+        .returning();
 
-      await prisma.runLog.create({
-        data: {
-          workspaceId: ctx.workspaceId,
-          eventType: "memory_updated",
-          actorType: "AGENT",
-          actorId: ctx.agentId,
-          entityType: "MemoryNode",
-          entityId: node.id,
-        },
+      await db.insert(runLogs).values({
+        workspaceId: ctx.workspaceId,
+        eventType: "memory_updated",
+        actorType: "AGENT",
+        actorId: ctx.agentId,
+        entityType: "MemoryNode",
+        entityId: node.id,
       });
 
       return text(JSON.stringify({ nodeId: node.id, version: node.version, status: "updated" }));
@@ -372,29 +409,30 @@ export async function executeTool(
       if (!hasScope(ctx, "memory:read")) return text("Permission denied: missing memory:read scope");
 
       const { query } = args as { query: string };
-      const searchTerm = `%${query}%`;
 
-      const nodes = await prisma.memoryNode.findMany({
-        where: {
-          workspaceId: ctx.workspaceId,
-          deletedAt: null,
-          OR: [
-            { title: { contains: query, mode: "insensitive" } },
-            { content: { contains: query, mode: "insensitive" } },
-          ],
-        },
-        take: 20,
-        orderBy: { updatedAt: "desc" },
-        select: {
-          id: true,
-          title: true,
-          type: true,
-          content: true,
-          projectId: true,
-          taskId: true,
-          updatedAt: true,
-        },
-      });
+      const nodes = await db
+        .select({
+          id: memoryNodes.id,
+          title: memoryNodes.title,
+          type: memoryNodes.type,
+          content: memoryNodes.content,
+          projectId: memoryNodes.projectId,
+          taskId: memoryNodes.taskId,
+          updatedAt: memoryNodes.updatedAt,
+        })
+        .from(memoryNodes)
+        .where(
+          and(
+            eq(memoryNodes.workspaceId, ctx.workspaceId),
+            isNull(memoryNodes.deletedAt),
+            or(
+              ilike(memoryNodes.title, `%${query}%`),
+              ilike(memoryNodes.content, `%${query}%`)
+            )
+          )
+        )
+        .orderBy(desc(memoryNodes.updatedAt))
+        .limit(20);
 
       return text(JSON.stringify(nodes, null, 2));
     }
@@ -404,29 +442,28 @@ export async function executeTool(
 
       const { taskId } = args as { taskId: string };
 
-      const approval = await prisma.approval.create({
-        data: {
+      const [approval] = await db
+        .insert(approvals)
+        .values({
           taskId,
           requestedByType: "AGENT",
           requestedById: ctx.agentId,
-        },
-      });
+        })
+        .returning();
 
-      await prisma.task.update({
-        where: { id: taskId },
-        data: { approvalState: "PENDING" },
-      });
+      await db
+        .update(tasks)
+        .set({ approvalState: "PENDING" })
+        .where(eq(tasks.id, taskId));
 
-      await prisma.runLog.create({
-        data: {
-          workspaceId: ctx.workspaceId,
-          eventType: "approval_requested",
-          actorType: "AGENT",
-          actorId: ctx.agentId,
-          entityType: "Approval",
-          entityId: approval.id,
-          metadata: { taskId },
-        },
+      await db.insert(runLogs).values({
+        workspaceId: ctx.workspaceId,
+        eventType: "approval_requested",
+        actorType: "AGENT",
+        actorId: ctx.agentId,
+        entityType: "Approval",
+        entityId: approval.id,
+        metadata: { taskId },
       });
 
       return text(JSON.stringify({ approvalId: approval.id, status: "pending" }));
@@ -437,25 +474,24 @@ export async function executeTool(
 
       const { taskId, content } = args as { taskId: string; content: string };
 
-      const comment = await prisma.taskComment.create({
-        data: {
+      const [comment] = await db
+        .insert(taskComments)
+        .values({
           taskId,
           actorType: "AGENT",
           actorId: ctx.agentId,
           content,
-        },
-      });
+        })
+        .returning();
 
-      await prisma.runLog.create({
-        data: {
-          workspaceId: ctx.workspaceId,
-          eventType: "comment_added",
-          actorType: "AGENT",
-          actorId: ctx.agentId,
-          entityType: "TaskComment",
-          entityId: comment.id,
-          metadata: { taskId },
-        },
+      await db.insert(runLogs).values({
+        workspaceId: ctx.workspaceId,
+        eventType: "comment_added",
+        actorType: "AGENT",
+        actorId: ctx.agentId,
+        entityType: "TaskComment",
+        entityId: comment.id,
+        metadata: { taskId },
       });
 
       return text(JSON.stringify({ commentId: comment.id, status: "added" }));
@@ -464,21 +500,19 @@ export async function executeTool(
     case "heartbeat": {
       const { status: statusMsg } = args as { status?: string };
 
-      await prisma.agent.update({
-        where: { id: ctx.agentId },
-        data: { lastSeenAt: new Date(), status: "ONLINE" },
-      });
+      await db
+        .update(agents)
+        .set({ lastSeenAt: new Date(), status: "ONLINE" })
+        .where(eq(agents.id, ctx.agentId));
 
-      await prisma.runLog.create({
-        data: {
-          workspaceId: ctx.workspaceId,
-          eventType: "agent_heartbeat",
-          actorType: "AGENT",
-          actorId: ctx.agentId,
-          entityType: "Agent",
-          entityId: ctx.agentId,
-          metadata: statusMsg ? { status: statusMsg } : undefined,
-        },
+      await db.insert(runLogs).values({
+        workspaceId: ctx.workspaceId,
+        eventType: "agent_heartbeat",
+        actorType: "AGENT",
+        actorId: ctx.agentId,
+        entityType: "Agent",
+        entityId: ctx.agentId,
+        metadata: statusMsg ? { status: statusMsg } : undefined,
       });
 
       return text(JSON.stringify({ status: "alive", timestamp: new Date().toISOString() }));

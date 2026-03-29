@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { getAuthUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { agents, agentTokens, queues, workspaceMembers } from "@/lib/db/schema";
+import { eq, and, isNull } from "drizzle-orm";
 import { generateToken, hashToken } from "@/lib/crypto";
 import { emitEvent } from "@/lib/events";
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const user = await getAuthUser();
+  if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -17,47 +18,53 @@ export async function POST(request: NextRequest) {
   }
 
   // Verify membership
-  const member = await prisma.workspaceMember.findUnique({
-    where: { workspaceId_userId: { workspaceId, userId: session.user.id } },
-  });
+  const [member] = await db
+    .select()
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, user.id)
+      )
+    )
+    .limit(1);
   if (!member || !["OWNER", "ADMIN"].includes(member.role)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   // Get all queue IDs for the workspace
-  const queues = await prisma.queue.findMany({
-    where: { workspaceId, deletedAt: null },
-    select: { id: true },
-  });
+  const queueRows = await db
+    .select({ id: queues.id })
+    .from(queues)
+    .where(and(eq(queues.workspaceId, workspaceId), isNull(queues.deletedAt)));
 
   // Create agent
-  const agent = await prisma.agent.create({
-    data: {
+  const [agent] = await db
+    .insert(agents)
+    .values({
       workspaceId,
       name,
       capabilities: capabilities || [],
-      allowedQueueIds: queues.map((q) => q.id),
-    },
-  });
+      allowedQueueIds: queueRows.map((q) => q.id),
+    })
+    .returning();
 
   // Create token
   const rawToken = `tr_${generateToken()}`;
   const tokenHash = hashToken(rawToken);
 
-  await prisma.agentToken.create({
-    data: {
-      agentId: agent.id,
-      tokenHash,
-      name: `${name} default token`,
-      scopes: ["*"],
-    },
+  await db.insert(agentTokens).values({
+    agentId: agent.id,
+    tokenHash,
+    name: `${name} default token`,
+    scopes: ["*"],
   });
 
   await emitEvent({
     workspaceId,
     eventType: "token_created",
     actorType: "USER",
-    actorId: session.user.id,
+    actorId: user.id,
     entityType: "Agent",
     entityId: agent.id,
     metadata: { agentName: name },

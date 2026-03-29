@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import { eq } from "drizzle-orm";
+import { db } from "./db.js";
+import { agents, agentTokens } from "../src/lib/db/schema.js";
 
 export interface AgentContext {
   agentId: string;
@@ -16,41 +16,47 @@ export interface AgentContext {
 export async function verifyAgentToken(rawToken: string): Promise<AgentContext | null> {
   const tokenHash = createHash("sha256").update(rawToken).digest("hex");
 
-  const agentToken = await prisma.agentToken.findUnique({
-    where: { tokenHash },
-    include: {
-      agent: true,
-    },
-  });
+  const [agentToken] = await db
+    .select()
+    .from(agentTokens)
+    .where(eq(agentTokens.tokenHash, tokenHash))
+    .limit(1);
 
   if (!agentToken) return null;
   if (agentToken.status !== "ACTIVE") return null;
   if (agentToken.expiresAt && agentToken.expiresAt < new Date()) return null;
 
+  // Get the agent
+  const [agent] = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, agentToken.agentId))
+    .limit(1);
+
+  if (!agent) return null;
+
   // Update last used
-  await prisma.agentToken.update({
-    where: { id: agentToken.id },
-    data: { lastUsedAt: new Date() },
-  });
+  await db
+    .update(agentTokens)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(agentTokens.id, agentToken.id));
 
   // Update agent last seen
-  await prisma.agent.update({
-    where: { id: agentToken.agent.id },
-    data: { lastSeenAt: new Date(), status: "ONLINE" },
-  });
+  await db
+    .update(agents)
+    .set({ lastSeenAt: new Date(), status: "ONLINE" })
+    .where(eq(agents.id, agent.id));
 
   return {
-    agentId: agentToken.agent.id,
-    agentName: agentToken.agent.name,
-    workspaceId: agentToken.agent.workspaceId,
+    agentId: agent.id,
+    agentName: agent.name,
+    workspaceId: agent.workspaceId,
     scopes: agentToken.scopes,
-    capabilities: agentToken.agent.capabilities,
-    allowedQueueIds: agentToken.agent.allowedQueueIds,
+    capabilities: agent.capabilities,
+    allowedQueueIds: agent.allowedQueueIds,
   };
 }
 
 export function hasScope(ctx: AgentContext, scope: string): boolean {
   return ctx.scopes.includes("*") || ctx.scopes.includes(scope);
 }
-
-export { prisma };

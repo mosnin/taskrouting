@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { getAuthUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { workspaces, workspaceMembers, queues, capabilities, projects } from "@/lib/db/schema";
 import { uniqueSlug } from "@/lib/crypto";
 import { emitEvent } from "@/lib/events";
 
@@ -32,8 +32,8 @@ const defaultCapabilities: Record<string, string[]> = {
 };
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const user = await getAuthUser();
+  if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -43,50 +43,56 @@ export async function POST(request: NextRequest) {
   }
 
   const slug = uniqueSlug(name);
-  const queues = useCaseQueues[useCase] || ["General", "Engineering", "Support"];
+  const queueNames = useCaseQueues[useCase] || ["General", "Engineering", "Support"];
 
-  const workspace = await prisma.workspace.create({
-    data: {
-      name,
-      slug,
-      members: {
-        create: { userId: session.user.id, role: "OWNER" },
-      },
-      queues: {
-        create: queues.map((queueName) => ({
-          name: queueName,
-          requiredCapabilities: defaultCapabilities[queueName] || [],
-        })),
-      },
-    },
-    include: { queues: true },
+  // Create workspace
+  const [workspace] = await db.insert(workspaces).values({ name, slug }).returning();
+
+  // Create membership
+  await db.insert(workspaceMembers).values({
+    workspaceId: workspace.id,
+    userId: user.id,
+    role: "OWNER",
   });
+
+  // Create queues
+  const createdQueues = await db
+    .insert(queues)
+    .values(
+      queueNames.map((queueName) => ({
+        workspaceId: workspace.id,
+        name: queueName,
+        requiredCapabilities: defaultCapabilities[queueName] || [],
+      }))
+    )
+    .returning();
 
   // Create default capabilities
   const allCaps = new Set<string>();
-  queues.forEach((q) => {
+  queueNames.forEach((q) => {
     (defaultCapabilities[q] || []).forEach((c) => allCaps.add(c));
   });
-  for (const cap of allCaps) {
-    await prisma.capability.create({
-      data: { workspaceId: workspace.id, name: cap },
-    });
+  if (allCaps.size > 0) {
+    await db.insert(capabilities).values(
+      Array.from(allCaps).map((cap) => ({
+        workspaceId: workspace.id,
+        name: cap,
+      }))
+    );
   }
 
   // Create a default "Incoming" project
-  await prisma.project.create({
-    data: {
-      workspaceId: workspace.id,
-      name: "Incoming",
-      description: "Tasks from external events and integrations",
-    },
+  await db.insert(projects).values({
+    workspaceId: workspace.id,
+    name: "Incoming",
+    description: "Tasks from external events and integrations",
   });
 
   await emitEvent({
     workspaceId: workspace.id,
     eventType: "workspace_created",
     actorType: "USER",
-    actorId: session.user.id,
+    actorId: user.id,
     entityType: "Workspace",
     entityId: workspace.id,
     metadata: { name, useCase },

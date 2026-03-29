@@ -10,10 +10,10 @@ export async function reviewApproval(
   workspaceId: string,
   note?: string
 ) {
-  const { session } = await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
+  const { user } = await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
   const approval = await approvalService.reviewApproval(
     approvalId,
-    session.user.id,
+    user.id,
     status,
     note
   );

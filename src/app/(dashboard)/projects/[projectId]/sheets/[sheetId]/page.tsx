@@ -1,4 +1,4 @@
-import { getSession } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { getTaskSheet } from "@/actions/task-sheet";
 import { getProject } from "@/actions/project";
@@ -12,8 +12,7 @@ interface SheetPageProps {
 
 export default async function SheetPage({ params }: SheetPageProps) {
   const { projectId, sheetId } = await params;
-  const session = await getSession();
-  if (!session?.user) redirect("/sign-in");
+  const user = await requireAuth();
 
   const workspaces = await getUserWorkspaces();
   if (!workspaces.length) redirect("/onboarding");
@@ -31,7 +30,7 @@ export default async function SheetPage({ params }: SheetPageProps) {
       sheet={sheet}
       queues={queues}
       workspaceId={workspace.id}
-      userId={session.user.id}
+      userId={user.id}
     />
   );
 }

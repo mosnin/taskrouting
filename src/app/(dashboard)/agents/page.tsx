@@ -1,40 +1,49 @@
-import { getSession } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { workspaceMembers, agents, claims, agentTokens } from "@/lib/db/schema";
+import { eq, and, count, isNull } from "drizzle-orm";
+import { desc } from "drizzle-orm";
 import { AgentsPageClient } from "./agents-client";
 
 export default async function AgentsPage() {
-  const session = await getSession();
-  if (!session?.user) redirect("/sign-in");
+  const user = await requireAuth();
 
-  const membership = await prisma.workspaceMember.findFirst({
-    where: { userId: session.user.id },
-    include: { workspace: true },
-  });
+  const [membership] = await db
+    .select()
+    .from(workspaceMembers)
+    .where(eq(workspaceMembers.userId, user.id))
+    .limit(1);
 
   if (!membership) redirect("/onboarding");
 
-  const agents = await prisma.agent.findMany({
-    where: { workspaceId: membership.workspaceId, deletedAt: null },
-    include: {
-      _count: { select: { claims: true, tokens: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+  const agentsList = await db
+    .select()
+    .from(agents)
+    .where(and(eq(agents.workspaceId, membership.workspaceId), isNull(agents.deletedAt)))
+    .orderBy(desc(agents.createdAt));
 
-  const serialized = agents.map((a) => ({
-    ...a,
-    lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
-    createdAt: a.createdAt.toISOString(),
-    updatedAt: a.updatedAt.toISOString(),
-    deletedAt: null,
-  }));
+  // Get counts for each agent
+  const agentsWithCounts = await Promise.all(
+    agentsList.map(async (agent) => {
+      const [claimsCount] = await db.select({ value: count() }).from(claims).where(eq(claims.agentId, agent.id));
+      const [tokensCount] = await db.select({ value: count() }).from(agentTokens).where(eq(agentTokens.agentId, agent.id));
+      return {
+        ...agent,
+        lastSeenAt: agent.lastSeenAt?.toISOString() ?? null,
+        createdAt: agent.createdAt.toISOString(),
+        updatedAt: agent.updatedAt.toISOString(),
+        deletedAt: null,
+        _count: { claims: claimsCount?.value ?? 0, tokens: tokensCount?.value ?? 0 },
+      };
+    })
+  );
 
   return (
     <AgentsPageClient
-      agents={serialized as any}
+      agents={agentsWithCounts as any}
       workspaceId={membership.workspaceId}
-      userId={session.user.id}
+      userId={user.id}
     />
   );
 }

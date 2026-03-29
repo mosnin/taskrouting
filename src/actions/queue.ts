@@ -20,8 +20,8 @@ export async function createQueue(formData: FormData) {
     requiredCapabilities: capsRaw ? JSON.parse(capsRaw as string) : undefined,
     workspaceId: formData.get("workspaceId"),
   });
-  const { session } = await requireWorkspaceRole(data.workspaceId, ["OWNER", "ADMIN"]);
-  const queue = await queueService.createQueue(data.workspaceId, session.user.id, {
+  const { user } = await requireWorkspaceRole(data.workspaceId, ["OWNER", "ADMIN"]);
+  const queue = await queueService.createQueue(data.workspaceId, user.id, {
     name: data.name,
     description: data.description,
     requiredCapabilities: data.requiredCapabilities,

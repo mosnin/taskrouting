@@ -28,8 +28,8 @@ export async function createTask(formData: FormData) {
     requiredCapabilities: capsRaw ? JSON.parse(capsRaw as string) : undefined,
     workspaceId: formData.get("workspaceId"),
   });
-  const { session } = await requireWorkspaceRole(data.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
-  const task = await taskService.createTask(data.workspaceId, session.user.id, {
+  const { user } = await requireWorkspaceRole(data.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
+  const task = await taskService.createTask(data.workspaceId, user.id, {
     title: data.title,
     description: data.description,
     projectId: data.projectId,
@@ -55,17 +55,17 @@ const updateTaskSchema = z.object({
 
 export async function updateTask(data: z.infer<typeof updateTaskSchema>) {
   const parsed = updateTaskSchema.parse(data);
-  const { session } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
+  const { user } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
   const { taskId, workspaceId, ...updates } = parsed;
-  const task = await taskService.updateTask(taskId, session.user.id, updates as any);
+  const task = await taskService.updateTask(taskId, user.id, updates as any);
   revalidatePath("/projects");
   revalidatePath("/queues");
   return task;
 }
 
 export async function routeTask(taskId: string, queueId: string, workspaceId: string) {
-  const { session } = await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
-  return taskService.routeTask(taskId, queueId, session.user.id);
+  const { user } = await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
+  return taskService.routeTask(taskId, queueId, user.id);
 }
 
 export async function addComment(
@@ -73,8 +73,8 @@ export async function addComment(
   content: string,
   workspaceId: string
 ) {
-  const { session } = await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
-  return taskService.addComment(taskId, "USER", session.user.id, content);
+  const { user } = await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
+  return taskService.addComment(taskId, "USER", user.id, content);
 }
 
 export async function listTasks(workspaceId: string, filters?: {

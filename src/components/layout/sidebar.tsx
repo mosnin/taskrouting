@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useSession, signOut } from "next-auth/react";
+import { useUser, useClerk } from "@clerk/nextjs";
 import {
   LayoutDashboard,
   FolderKanban,
@@ -50,21 +50,21 @@ const sections: NavSection[] = [
   {
     label: "Overview",
     items: [
-      { name: "Dashboard", href: "/", icon: LayoutDashboard, shortcut: "⌘D" },
+      { name: "Dashboard", href: "/", icon: LayoutDashboard, shortcut: "\u2318D" },
     ],
   },
   {
     label: "Work",
     items: [
-      { name: "Projects", href: "/projects", icon: FolderKanban, shortcut: "⌘P" },
-      { name: "Queues", href: "/queues", icon: Inbox, shortcut: "⌘Q" },
-      { name: "Agents", href: "/agents", icon: Bot, shortcut: "⌘A" },
+      { name: "Projects", href: "/projects", icon: FolderKanban, shortcut: "\u2318P" },
+      { name: "Queues", href: "/queues", icon: Inbox, shortcut: "\u2318Q" },
+      { name: "Agents", href: "/agents", icon: Bot, shortcut: "\u2318A" },
     ],
   },
   {
     label: "Knowledge",
     items: [
-      { name: "Memory", href: "/memory", icon: Brain, shortcut: "⌘M" },
+      { name: "Memory", href: "/memory", icon: Brain, shortcut: "\u2318M" },
     ],
   },
   {
@@ -79,7 +79,8 @@ const sections: NavSection[] = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { data: session } = useSession();
+  const { user } = useUser();
+  const { signOut } = useClerk();
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -100,7 +101,7 @@ export function Sidebar() {
     return pathname.startsWith(href);
   };
 
-  const userInitial = session?.user?.name?.charAt(0)?.toUpperCase() ?? "U";
+  const userInitial = user?.fullName?.charAt(0)?.toUpperCase() ?? "U";
 
   return (
     <aside
@@ -266,13 +267,21 @@ export function Sidebar() {
                 collapsed ? "justify-center" : "gap-2.5"
               )}
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-500 text-xs font-semibold text-white">
-                {userInitial}
-              </div>
+              {user?.imageUrl ? (
+                <img
+                  src={user.imageUrl}
+                  alt={user.fullName ?? "User"}
+                  className="h-8 w-8 shrink-0 rounded-full object-cover"
+                />
+              ) : (
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-500 text-xs font-semibold text-white">
+                  {userInitial}
+                </div>
+              )}
               {!collapsed && (
                 <div className="flex-1 overflow-hidden text-left">
                   <p className="truncate text-[13px] font-medium text-zinc-200">
-                    {session?.user?.name ?? "User"}
+                    {user?.fullName ?? "User"}
                   </p>
                   <div className="flex items-center gap-1.5">
                     <span className="inline-flex items-center rounded bg-violet-500/20 px-1 py-px text-[9px] font-semibold uppercase tracking-wider text-violet-400">
@@ -286,15 +295,15 @@ export function Sidebar() {
           <DropdownMenuContent side="right" align="end" className="w-56">
             <DropdownMenuLabel>
               <div className="flex flex-col">
-                <span>{session?.user?.name ?? "User"}</span>
+                <span>{user?.fullName ?? "User"}</span>
                 <span className="text-xs font-normal text-muted-foreground">
-                  {session?.user?.email ?? ""}
+                  {user?.primaryEmailAddress?.emailAddress ?? ""}
                 </span>
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={() => signOut({ callbackUrl: "/sign-in" })}
+              onClick={() => signOut({ redirectUrl: "/sign-in" })}
               className="text-red-400 focus:text-red-400"
             >
               <LogOut className="h-4 w-4" />

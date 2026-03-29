@@ -1,11 +1,20 @@
-import { prisma } from "@/lib/prisma";
-import { emitEvent } from "@/lib/events";
+import { db } from "@/lib/db";
+import {
+  tasks,
+  subtasks,
+  claims,
+  artifacts,
+  taskComments,
+  queues,
+} from "@/lib/db/schema";
 import type {
   TaskStatus,
   TaskPriority,
   OwnerType,
   ActorType,
-} from "@prisma/client";
+} from "@/lib/db/schema";
+import { eq, and, isNull, desc, asc, inArray } from "drizzle-orm";
+import { emitEvent } from "@/lib/events";
 
 export async function createTask(
   workspaceId: string,
@@ -25,11 +34,12 @@ export async function createTask(
 
   // Auto-route to a matching queue if no queue specified but capabilities provided
   if (!resolvedQueueId && data.requiredCapabilities?.length) {
-    const queues = await prisma.queue.findMany({
-      where: { workspaceId, deletedAt: null },
-    });
+    const allQueues = await db
+      .select()
+      .from(queues)
+      .where(and(eq(queues.workspaceId, workspaceId), isNull(queues.deletedAt)));
 
-    for (const queue of queues) {
+    for (const queue of allQueues) {
       if (queue.requiredCapabilities.length === 0) continue;
       const taskCaps = new Set(data.requiredCapabilities);
       const matches = queue.requiredCapabilities.every((cap) => taskCaps.has(cap));
@@ -40,8 +50,9 @@ export async function createTask(
     }
   }
 
-  const task = await prisma.task.create({
-    data: {
+  const [task] = await db
+    .insert(tasks)
+    .values({
       workspaceId,
       projectId: data.projectId,
       taskSheetId: data.taskSheetId,
@@ -53,8 +64,8 @@ export async function createTask(
       dueAt: data.dueAt,
       status: "BACKLOG",
       ownerType: "UNASSIGNED",
-    },
-  });
+    })
+    .returning();
 
   await emitEvent({
     workspaceId,
@@ -75,15 +86,44 @@ export async function createTask(
 }
 
 export async function getTask(taskId: string) {
-  return prisma.task.findUniqueOrThrow({
-    where: { id: taskId },
-    include: {
-      subtasks: { orderBy: { order: "asc" } },
-      claims: { orderBy: { createdAt: "desc" } },
-      artifacts: { orderBy: { createdAt: "desc" } },
-      comments: { orderBy: { createdAt: "asc" } },
-    },
-  });
+  const [task] = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1);
+  if (!task) throw new Error("Task not found");
+
+  const [taskSubtasks, taskClaims, taskArtifacts, taskCommentsResult] =
+    await Promise.all([
+      db
+        .select()
+        .from(subtasks)
+        .where(eq(subtasks.taskId, taskId))
+        .orderBy(asc(subtasks.order)),
+      db
+        .select()
+        .from(claims)
+        .where(eq(claims.taskId, taskId))
+        .orderBy(desc(claims.createdAt)),
+      db
+        .select()
+        .from(artifacts)
+        .where(eq(artifacts.taskId, taskId))
+        .orderBy(desc(artifacts.createdAt)),
+      db
+        .select()
+        .from(taskComments)
+        .where(eq(taskComments.taskId, taskId))
+        .orderBy(asc(taskComments.createdAt)),
+    ]);
+
+  return {
+    ...task,
+    subtasks: taskSubtasks,
+    claims: taskClaims,
+    artifacts: taskArtifacts,
+    comments: taskCommentsResult,
+  };
 }
 
 export async function listTasks(
@@ -96,18 +136,19 @@ export async function listTasks(
     ownerType?: OwnerType;
   }
 ) {
-  return prisma.task.findMany({
-    where: {
-      workspaceId,
-      deletedAt: null,
-      ...(filters?.projectId && { projectId: filters.projectId }),
-      ...(filters?.taskSheetId && { taskSheetId: filters.taskSheetId }),
-      ...(filters?.queueId && { queueId: filters.queueId }),
-      ...(filters?.status && { status: filters.status }),
-      ...(filters?.ownerType && { ownerType: filters.ownerType }),
-    },
-    orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
-  });
+  const conditions = [eq(tasks.workspaceId, workspaceId), isNull(tasks.deletedAt)];
+
+  if (filters?.projectId) conditions.push(eq(tasks.projectId, filters.projectId));
+  if (filters?.taskSheetId) conditions.push(eq(tasks.taskSheetId, filters.taskSheetId));
+  if (filters?.queueId) conditions.push(eq(tasks.queueId, filters.queueId));
+  if (filters?.status) conditions.push(eq(tasks.status, filters.status));
+  if (filters?.ownerType) conditions.push(eq(tasks.ownerType, filters.ownerType));
+
+  return db
+    .select()
+    .from(tasks)
+    .where(and(...conditions))
+    .orderBy(asc(tasks.priority), desc(tasks.createdAt));
 }
 
 export async function updateTask(
@@ -123,10 +164,12 @@ export async function updateTask(
     ownerId: string;
   }>
 ) {
-  const task = await prisma.task.update({
-    where: { id: taskId },
-    data,
-  });
+  const [task] = await db
+    .update(tasks)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(tasks.id, taskId))
+    .returning();
+  if (!task) throw new Error("Task not found");
 
   await emitEvent({
     workspaceId: task.workspaceId,
@@ -146,10 +189,12 @@ export async function routeTask(
   queueId: string,
   userId: string
 ) {
-  const task = await prisma.task.update({
-    where: { id: taskId },
-    data: { queueId },
-  });
+  const [task] = await db
+    .update(tasks)
+    .set({ queueId, updatedAt: new Date() })
+    .where(eq(tasks.id, taskId))
+    .returning();
+  if (!task) throw new Error("Task not found");
 
   await emitEvent({
     workspaceId: task.workspaceId,
@@ -170,19 +215,22 @@ export async function addComment(
   actorId: string,
   content: string
 ) {
-  const task = await prisma.task.findUniqueOrThrow({
-    where: { id: taskId },
-    select: { workspaceId: true },
-  });
+  const [task] = await db
+    .select({ workspaceId: tasks.workspaceId })
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1);
+  if (!task) throw new Error("Task not found");
 
-  const comment = await prisma.taskComment.create({
-    data: {
+  const [comment] = await db
+    .insert(taskComments)
+    .values({
       taskId,
       actorType,
       actorId,
       content,
-    },
-  });
+    })
+    .returning();
 
   await emitEvent({
     workspaceId: task.workspaceId,

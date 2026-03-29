@@ -1,4 +1,4 @@
-import type { IntegrationProvider, IntegrationStatus } from "@prisma/client";
+import type { IntegrationProvider, IntegrationStatus } from "@/lib/db/schema";
 
 /** The lifecycle of an integration connection */
 export type ConnectionLifecycle =

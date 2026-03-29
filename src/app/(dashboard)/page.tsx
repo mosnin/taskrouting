@@ -1,6 +1,8 @@
-import { getSession } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { workspaceMembers, tasks, agents, queues, approvals, claims, runLogs } from "@/lib/db/schema";
+import { eq, and, count, desc, isNull } from "drizzle-orm";
 import { PageHeader } from "@/components/layout/header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatsCard } from "@/components/dashboard/stats-card";
@@ -17,43 +19,48 @@ import {
 import Link from "next/link";
 
 export default async function DashboardPage() {
-  const session = await getSession();
-  if (!session?.user) redirect("/sign-in");
+  const user = await requireAuth();
 
   // Get the user's first workspace
-  const membership = await prisma.workspaceMember.findFirst({
-    where: { userId: session.user.id },
-    include: { workspace: true },
-  });
+  const [membership] = await db
+    .select()
+    .from(workspaceMembers)
+    .where(eq(workspaceMembers.userId, user.id))
+    .limit(1);
 
   if (!membership) redirect("/onboarding");
 
   const workspaceId = membership.workspaceId;
 
   const [
-    totalTasks,
-    agents,
-    queueCount,
-    pendingApprovals,
-    activeClaims,
-    recentLogs,
-    tasksByStatus,
+    totalTasksResult,
+    agentsList,
+    queueCountResult,
+    pendingApprovalsResult,
+    activeClaimsResult,
+    recentLogsList,
+    tasksByStatusResult,
   ] = await Promise.all([
-    prisma.task.count({ where: { workspaceId, deletedAt: null } }),
-    prisma.agent.findMany({ where: { workspaceId, deletedAt: null }, select: { status: true } }),
-    prisma.queue.count({ where: { workspaceId, deletedAt: null } }),
-    prisma.approval.count({ where: { status: "PENDING", task: { workspaceId } } }),
-    prisma.claim.count({ where: { status: "ACTIVE", queue: { workspaceId } } }),
-    prisma.runLog.findMany({ where: { workspaceId }, orderBy: { createdAt: "desc" }, take: 15 }),
-    prisma.task.groupBy({ by: ["status"], where: { workspaceId, deletedAt: null }, _count: true }),
+    db.select({ value: count() }).from(tasks).where(and(eq(tasks.workspaceId, workspaceId), isNull(tasks.deletedAt))),
+    db.select({ status: agents.status }).from(agents).where(and(eq(agents.workspaceId, workspaceId), isNull(agents.deletedAt))),
+    db.select({ value: count() }).from(queues).where(and(eq(queues.workspaceId, workspaceId), isNull(queues.deletedAt))),
+    db.select({ value: count() }).from(approvals).innerJoin(tasks, eq(approvals.taskId, tasks.id)).where(and(eq(approvals.status, "PENDING"), eq(tasks.workspaceId, workspaceId))),
+    db.select({ value: count() }).from(claims).innerJoin(queues, eq(claims.queueId, queues.id)).where(and(eq(claims.status, "ACTIVE"), eq(queues.workspaceId, workspaceId))),
+    db.select().from(runLogs).where(eq(runLogs.workspaceId, workspaceId)).orderBy(desc(runLogs.createdAt)).limit(15),
+    db.select({ status: tasks.status, count: count() }).from(tasks).where(and(eq(tasks.workspaceId, workspaceId), isNull(tasks.deletedAt))).groupBy(tasks.status),
   ]);
 
-  const onlineAgents = agents.filter((a) => a.status === "ONLINE").length;
-  const totalAgents = agents.length;
+  const totalTasks = totalTasksResult[0]?.value ?? 0;
+  const queueCount = queueCountResult[0]?.value ?? 0;
+  const pendingApprovals = pendingApprovalsResult[0]?.value ?? 0;
+  const activeClaims = activeClaimsResult[0]?.value ?? 0;
 
-  const statusData = tasksByStatus.map((g) => ({ status: g.status, count: g._count }));
+  const onlineAgents = agentsList.filter((a) => a.status === "ONLINE").length;
+  const totalAgents = agentsList.length;
 
-  const activity = recentLogs.map((log) => ({
+  const statusData = tasksByStatusResult.map((g) => ({ status: g.status, count: g.count }));
+
+  const activity = recentLogsList.map((log) => ({
     id: log.id,
     eventType: log.eventType,
     entityType: log.entityType ?? "",
@@ -64,7 +71,7 @@ export default async function DashboardPage() {
     createdAt: log.createdAt.toISOString(),
   }));
 
-  const firstName = session.user.name?.split(" ")[0] || "there";
+  const firstName = user.name?.split(" ")[0] || "there";
 
   return (
     <div className="space-y-6 p-6 animate-fade-in">

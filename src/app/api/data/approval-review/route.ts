@@ -1,42 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { getAuthUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { approvals, tasks, workspaceMembers } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
 import { emitEvent } from "@/lib/events";
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = await getAuthUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { approvalId, status, note } = await request.json();
 
-  const approval = await prisma.approval.update({
-    where: { id: approvalId },
-    data: {
+  const [approval] = await db
+    .update(approvals)
+    .set({
       status,
-      reviewerId: session.user.id,
+      reviewerId: user.id,
       decisionNote: note || null,
-    },
-    include: { task: true },
-  });
+    })
+    .where(eq(approvals.id, approvalId))
+    .returning();
 
   // Update task approval state
-  await prisma.task.update({
-    where: { id: approval.taskId },
-    data: { approvalState: status },
-  });
+  await db
+    .update(tasks)
+    .set({ approvalState: status })
+    .where(eq(tasks.id, approval.taskId));
 
-  const memberships = await prisma.workspaceMember.findMany({
-    where: { userId: session.user.id },
-    select: { workspaceId: true },
-  });
+  const memberships = await db
+    .select({ workspaceId: workspaceMembers.workspaceId })
+    .from(workspaceMembers)
+    .where(eq(workspaceMembers.userId, user.id));
 
   if (memberships.length > 0) {
     await emitEvent({
       workspaceId: memberships[0].workspaceId,
       eventType: status === "APPROVED" ? "approval_granted" : "approval_denied",
       actorType: "USER",
-      actorId: session.user.id,
+      actorId: user.id,
       entityType: "Approval",
       entityId: approval.id,
       metadata: { taskId: approval.taskId, status },

@@ -1,5 +1,7 @@
-import { prisma } from "@/lib/prisma";
-import type { ActorType } from "@prisma/client";
+import { db } from "@/lib/db";
+import { runLogs } from "@/lib/db/schema";
+import type { ActorType } from "@/lib/db/schema";
+import { eq, and, desc, lt } from "drizzle-orm";
 
 export async function listRunLogs(
   workspaceId: string,
@@ -14,32 +16,33 @@ export async function listRunLogs(
 ) {
   const take = Math.min(filters?.limit ?? 50, 200);
 
-  // Cursor-based pagination using composite of createdAt + id
-  let cursorCondition: { createdAt?: { lt: Date }; id?: { lt: string } } | undefined;
+  // Cursor-based pagination using createdAt
+  let cursorDate: Date | undefined;
   if (filters?.cursor) {
-    const cursorLog = await prisma.runLog.findUnique({
-      where: { id: filters.cursor },
-      select: { createdAt: true, id: true },
-    });
+    const [cursorLog] = await db
+      .select({ createdAt: runLogs.createdAt })
+      .from(runLogs)
+      .where(eq(runLogs.id, filters.cursor))
+      .limit(1);
     if (cursorLog) {
-      cursorCondition = {
-        createdAt: { lt: cursorLog.createdAt },
-      };
+      cursorDate = cursorLog.createdAt;
     }
   }
 
-  const logs = await prisma.runLog.findMany({
-    where: {
-      workspaceId,
-      ...(filters?.eventType && { eventType: filters.eventType }),
-      ...(filters?.entityType && { entityType: filters.entityType }),
-      ...(filters?.entityId && { entityId: filters.entityId }),
-      ...(filters?.actorType && { actorType: filters.actorType }),
-      ...cursorCondition,
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: take + 1, // Fetch one extra to determine if there are more
-  });
+  const conditions = [eq(runLogs.workspaceId, workspaceId)];
+
+  if (filters?.eventType) conditions.push(eq(runLogs.eventType, filters.eventType));
+  if (filters?.entityType) conditions.push(eq(runLogs.entityType, filters.entityType));
+  if (filters?.entityId) conditions.push(eq(runLogs.entityId, filters.entityId));
+  if (filters?.actorType) conditions.push(eq(runLogs.actorType, filters.actorType));
+  if (cursorDate) conditions.push(lt(runLogs.createdAt, cursorDate));
+
+  const logs = await db
+    .select()
+    .from(runLogs)
+    .where(and(...conditions))
+    .orderBy(desc(runLogs.createdAt), desc(runLogs.id))
+    .limit(take + 1); // Fetch one extra to determine if there are more
 
   const hasMore = logs.length > take;
   const items = hasMore ? logs.slice(0, take) : logs;

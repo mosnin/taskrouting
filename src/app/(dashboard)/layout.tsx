@@ -1,5 +1,4 @@
-import { redirect } from "next/navigation";
-import { getSession } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { Sidebar } from "@/components/layout/sidebar";
 import { CommandPalette } from "@/components/command-palette";
 
@@ -8,11 +7,7 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getSession();
-
-  if (!session?.user) {
-    redirect("/sign-in");
-  }
+  await requireAuth();
 
   return (
     <div className="flex h-screen overflow-hidden">

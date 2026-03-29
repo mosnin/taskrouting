@@ -20,7 +20,7 @@ export async function createTaskSheet(formData: FormData) {
     workspaceId: formData.get("workspaceId"),
   });
 
-  const { session } = await requireWorkspaceRole(data.workspaceId, [
+  const { user } = await requireWorkspaceRole(data.workspaceId, [
     "OWNER",
     "ADMIN",
     "MEMBER",
@@ -29,7 +29,7 @@ export async function createTaskSheet(formData: FormData) {
   const sheet = await taskSheetService.createTaskSheet(
     data.workspaceId,
     data.projectId,
-    session.user.id,
+    user.id,
     { name: data.name, description: data.description }
   );
 

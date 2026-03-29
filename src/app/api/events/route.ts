@@ -1,13 +1,14 @@
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getAuthUser } from "@/lib/auth";
 import { subscribe } from "@/lib/events";
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { workspaceMembers } from "@/lib/db/schema";
+import { and, eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const user = await getAuthUser();
+  if (!user) {
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -18,11 +19,16 @@ export async function GET(request: Request) {
   }
 
   // Verify membership
-  const member = await prisma.workspaceMember.findUnique({
-    where: {
-      workspaceId_userId: { workspaceId, userId: session.user.id },
-    },
-  });
+  const [member] = await db
+    .select()
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, user.id)
+      )
+    )
+    .limit(1);
   if (!member) {
     return new Response("Forbidden", { status: 403 });
   }

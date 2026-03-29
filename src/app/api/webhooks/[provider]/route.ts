@@ -1,8 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import {
+  integrationConnections,
+  externalEvents,
+  workflowTemplates,
+  queues,
+  projects,
+  tasks,
+} from "@/lib/db/schema";
 import { getAdapter } from "@/lib/integrations/registry";
 import { emitEvent } from "@/lib/events";
-import type { IntegrationProvider } from "@prisma/client";
+import type { IntegrationProvider } from "@/lib/db/schema";
+import { eq, and, ne } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 export async function POST(
@@ -19,9 +28,15 @@ export async function POST(
   const body = await request.text();
 
   // Find all connections for this provider to check signatures
-  const connections = await prisma.integrationConnection.findMany({
-    where: { provider, status: { not: "DISCONNECTED" } },
-  });
+  const connections = await db
+    .select()
+    .from(integrationConnections)
+    .where(
+      and(
+        eq(integrationConnections.provider, provider),
+        ne(integrationConnections.status, "DISCONNECTED")
+      )
+    );
 
   // Try to verify against each connection's webhook secret
   const signature =
@@ -62,24 +77,27 @@ export async function POST(
   const idempotencyKey = `${provider}:${eventType}:${parsed.id || parsed.event?.ts || randomUUID()}`;
 
   // Check idempotency
-  const existing = await prisma.externalEvent.findUnique({
-    where: { idempotencyKey },
-  });
+  const [existing] = await db
+    .select()
+    .from(externalEvents)
+    .where(eq(externalEvents.idempotencyKey, idempotencyKey))
+    .limit(1);
   if (existing) {
     return NextResponse.json({ status: "duplicate" });
   }
 
   // Store the event
-  const externalEvent = await prisma.externalEvent.create({
-    data: {
+  const [externalEvent] = await db
+    .insert(externalEvents)
+    .values({
       workspaceId: matchedConnection.workspaceId,
       provider: providerParam,
       eventType,
       payload: parsed,
       idempotencyKey,
       processingStatus: "PENDING",
-    },
-  });
+    })
+    .returning();
 
   // Emit event
   await emitEvent({
@@ -97,12 +115,15 @@ export async function POST(
     const normalized = adapter.normalizeEvent(eventType, parsed);
     if (normalized) {
       // Find matching workflow templates
-      const templates = await prisma.workflowTemplate.findMany({
-        where: {
-          workspaceId: matchedConnection.workspaceId,
-          enabled: true,
-        },
-      });
+      const templates = await db
+        .select()
+        .from(workflowTemplates)
+        .where(
+          and(
+            eq(workflowTemplates.workspaceId, matchedConnection.workspaceId),
+            eq(workflowTemplates.enabled, true)
+          )
+        );
 
       for (const template of templates) {
         const trigger = template.trigger as any;
@@ -123,65 +144,72 @@ export async function POST(
             // Find target queue
             let queueId: string | undefined;
             if (action.config.queueName) {
-              const queue = await prisma.queue.findFirst({
-                where: {
-                  workspaceId: matchedConnection.workspaceId,
-                  name: action.config.queueName,
-                },
-              });
+              const [queue] = await db
+                .select()
+                .from(queues)
+                .where(
+                  and(
+                    eq(queues.workspaceId, matchedConnection!.workspaceId),
+                    eq(queues.name, action.config.queueName)
+                  )
+                )
+                .limit(1);
               queueId = queue?.id;
             }
 
             // Find or create default project
-            let project = await prisma.project.findFirst({
-              where: {
-                workspaceId: matchedConnection.workspaceId,
-                name: "Incoming",
-              },
-            });
+            let [project] = await db
+              .select()
+              .from(projects)
+              .where(
+                and(
+                  eq(projects.workspaceId, matchedConnection!.workspaceId),
+                  eq(projects.name, "Incoming")
+                )
+              )
+              .limit(1);
             if (!project) {
-              project = await prisma.project.create({
-                data: {
-                  workspaceId: matchedConnection.workspaceId,
+              [project] = await db
+                .insert(projects)
+                .values({
+                  workspaceId: matchedConnection!.workspaceId,
                   name: "Incoming",
                   description: "Tasks created from external events",
-                },
-              });
+                })
+                .returning();
             }
 
-            await prisma.task.create({
-              data: {
-                workspaceId: matchedConnection.workspaceId,
-                projectId: project.id,
-                title,
-                description: normalized.description,
-                queueId,
-                priority: action.config.priority || "MEDIUM",
-                requiredCapabilities: action.config.requiredCapabilities || [],
-                sourceProvider: providerParam,
-                sourceObjectType: normalized.externalType,
-                sourceObjectId: normalized.externalId,
-                status: "TODO",
-                metadata: normalized.metadata as any,
-              },
+            await db.insert(tasks).values({
+              workspaceId: matchedConnection!.workspaceId,
+              projectId: project.id,
+              title,
+              description: normalized.description,
+              queueId: queueId || null,
+              priority: action.config.priority || "MEDIUM",
+              requiredCapabilities: action.config.requiredCapabilities || [],
+              sourceProvider: providerParam,
+              sourceObjectType: normalized.externalType,
+              sourceObjectId: normalized.externalId,
+              status: "TODO",
+              metadata: normalized.metadata as any,
             });
           }
         }
       }
     }
 
-    await prisma.externalEvent.update({
-      where: { id: externalEvent.id },
-      data: { processingStatus: "PROCESSED", processedAt: new Date() },
-    });
+    await db
+      .update(externalEvents)
+      .set({ processingStatus: "PROCESSED", processedAt: new Date() })
+      .where(eq(externalEvents.id, externalEvent.id));
   } catch (error) {
-    await prisma.externalEvent.update({
-      where: { id: externalEvent.id },
-      data: {
+    await db
+      .update(externalEvents)
+      .set({
         processingStatus: "FAILED",
         errorMessage: error instanceof Error ? error.message : "Unknown error",
-      },
-    });
+      })
+      .where(eq(externalEvents.id, externalEvent.id));
   }
 
   return NextResponse.json({ status: "ok" });

@@ -1,42 +1,44 @@
 "use server";
 
-import { requireSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { requireAuth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { tasks, agents, queues, approvals, runLogs, claims } from "@/lib/db/schema";
+import { eq, and, count, isNull, desc, inArray } from "drizzle-orm";
 
 export async function getDashboardStats(workspaceId: string) {
-  const session = await requireSession();
+  const user = await requireAuth();
 
   const [
-    taskCounts,
-    agentCounts,
-    queueCount,
-    pendingApprovals,
-    recentLogs,
-    tasksByStatus,
-    tasksByPriority,
-    activeClaimsCount,
+    [taskCountResult],
+    agentCountResults,
+    [queueCountResult],
+    [pendingApprovalsResult],
+    recentLogsResult,
+    tasksByStatusResult,
+    tasksByPriorityResult,
+    [activeClaimsResult],
   ] = await Promise.all([
-    prisma.task.count({ where: { workspaceId, deletedAt: null } }),
-    prisma.agent.groupBy({ by: ["status"], where: { workspaceId, deletedAt: null }, _count: true }),
-    prisma.queue.count({ where: { workspaceId, deletedAt: null } }),
-    prisma.approval.count({ where: { status: "PENDING", task: { workspaceId } } }),
-    prisma.runLog.findMany({ where: { workspaceId }, orderBy: { createdAt: "desc" }, take: 15 }),
-    prisma.task.groupBy({ by: ["status"], where: { workspaceId, deletedAt: null }, _count: true }),
-    prisma.task.groupBy({ by: ["priority"], where: { workspaceId, deletedAt: null }, _count: true }),
-    prisma.claim.count({ where: { status: "ACTIVE", queue: { workspaceId } } }),
+    db.select({ value: count() }).from(tasks).where(and(eq(tasks.workspaceId, workspaceId), isNull(tasks.deletedAt))),
+    db.select({ status: agents.status, count: count() }).from(agents).where(and(eq(agents.workspaceId, workspaceId), isNull(agents.deletedAt))).groupBy(agents.status),
+    db.select({ value: count() }).from(queues).where(and(eq(queues.workspaceId, workspaceId), isNull(queues.deletedAt))),
+    db.select({ value: count() }).from(approvals).innerJoin(tasks, eq(approvals.taskId, tasks.id)).where(and(eq(approvals.status, "PENDING"), eq(tasks.workspaceId, workspaceId))),
+    db.select().from(runLogs).where(eq(runLogs.workspaceId, workspaceId)).orderBy(desc(runLogs.createdAt)).limit(15),
+    db.select({ status: tasks.status, count: count() }).from(tasks).where(and(eq(tasks.workspaceId, workspaceId), isNull(tasks.deletedAt))).groupBy(tasks.status),
+    db.select({ priority: tasks.priority, count: count() }).from(tasks).where(and(eq(tasks.workspaceId, workspaceId), isNull(tasks.deletedAt))).groupBy(tasks.priority),
+    db.select({ value: count() }).from(claims).innerJoin(queues, eq(claims.queueId, queues.id)).where(and(eq(claims.status, "ACTIVE"), eq(queues.workspaceId, workspaceId))),
   ]);
 
-  const totalAgents = agentCounts.reduce((sum, g) => sum + g._count, 0);
-  const onlineAgents = agentCounts.find((g) => g.status === "ONLINE")?._count ?? 0;
+  const totalAgents = agentCountResults.reduce((sum, g) => sum + g.count, 0);
+  const onlineAgents = agentCountResults.find((g) => g.status === "ONLINE")?.count ?? 0;
 
   return {
-    totalTasks: taskCounts,
+    totalTasks: taskCountResult.value,
     totalAgents,
     onlineAgents,
-    totalQueues: queueCount,
-    pendingApprovals,
-    activeClaims: activeClaimsCount,
-    recentActivity: recentLogs.map((log) => ({
+    totalQueues: queueCountResult.value,
+    pendingApprovals: pendingApprovalsResult.value,
+    activeClaims: activeClaimsResult.value,
+    recentActivity: recentLogsResult.map((log) => ({
       id: log.id,
       eventType: log.eventType,
       entityType: log.entityType,
@@ -46,7 +48,7 @@ export async function getDashboardStats(workspaceId: string) {
       message: log.eventType.replace(/_/g, " "),
       createdAt: log.createdAt.toISOString(),
     })),
-    tasksByStatus: tasksByStatus.map((g) => ({ status: g.status, count: g._count })),
-    tasksByPriority: tasksByPriority.map((g) => ({ priority: g.priority, count: g._count })),
+    tasksByStatus: tasksByStatusResult.map((g) => ({ status: g.status, count: g.count })),
+    tasksByPriority: tasksByPriorityResult.map((g) => ({ priority: g.priority, count: g.count })),
   };
 }

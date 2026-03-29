@@ -17,8 +17,8 @@ export async function createProject(formData: FormData) {
     description: formData.get("description") || undefined,
     workspaceId: formData.get("workspaceId"),
   });
-  const { session } = await requireWorkspaceRole(data.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
-  const project = await projectService.createProject(data.workspaceId, session.user.id, {
+  const { user } = await requireWorkspaceRole(data.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
+  const project = await projectService.createProject(data.workspaceId, user.id, {
     name: data.name,
     description: data.description,
   });

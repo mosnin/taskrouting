@@ -26,8 +26,8 @@ const createMemoryNodeSchema = z.object({
 
 export async function createMemoryNode(data: z.infer<typeof createMemoryNodeSchema>) {
   const parsed = createMemoryNodeSchema.parse(data);
-  const { session } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
-  const node = await memoryService.createMemoryNode(parsed.workspaceId, session.user.id, {
+  const { user } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
+  const node = await memoryService.createMemoryNode(parsed.workspaceId, user.id, {
     title: parsed.title,
     content: parsed.content,
     type: parsed.type as any,
@@ -48,8 +48,8 @@ const updateMemoryNodeSchema = z.object({
 
 export async function updateMemoryNode(data: z.infer<typeof updateMemoryNodeSchema>) {
   const parsed = updateMemoryNodeSchema.parse(data);
-  const { session } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
-  const node = await memoryService.updateMemoryNode(parsed.nodeId, session.user.id, {
+  const { user } = await requireWorkspaceRole(parsed.workspaceId, ["OWNER", "ADMIN", "MEMBER"]);
+  const node = await memoryService.updateMemoryNode(parsed.nodeId, user.id, {
     title: parsed.title,
     content: parsed.content,
   });

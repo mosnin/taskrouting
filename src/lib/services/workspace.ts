@@ -1,35 +1,30 @@
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { workspaces, workspaceMembers, queues, users } from "@/lib/db/schema";
+import { eq, desc, asc } from "drizzle-orm";
 import { emitEvent } from "@/lib/events";
 import { uniqueSlug } from "@/lib/crypto";
-import type { Workspace } from "@prisma/client";
 
 export async function createWorkspace(
   userId: string,
   name: string
-): Promise<Workspace> {
+) {
   const slug = uniqueSlug(name);
 
-  const workspace = await prisma.$transaction(async (tx) => {
-    const ws = await tx.workspace.create({
-      data: { name, slug },
-    });
+  const workspace = await db.transaction(async (tx) => {
+    const [ws] = await tx.insert(workspaces).values({ name, slug }).returning();
 
-    await tx.workspaceMember.create({
-      data: {
-        workspaceId: ws.id,
-        userId,
-        role: "OWNER",
-      },
+    await tx.insert(workspaceMembers).values({
+      workspaceId: ws.id,
+      userId,
+      role: "OWNER",
     });
 
     // Create default queues
-    await tx.queue.createMany({
-      data: [
-        { workspaceId: ws.id, name: "Default", description: "Default task queue" },
-        { workspaceId: ws.id, name: "Triage", description: "Incoming tasks awaiting triage" },
-        { workspaceId: ws.id, name: "Urgent", description: "High-priority tasks requiring immediate attention" },
-      ],
-    });
+    await tx.insert(queues).values([
+      { workspaceId: ws.id, name: "Default", description: "Default task queue" },
+      { workspaceId: ws.id, name: "Triage", description: "Incoming tasks awaiting triage" },
+      { workspaceId: ws.id, name: "Urgent", description: "High-priority tasks requiring immediate attention" },
+    ]);
 
     return ws;
   });
@@ -48,23 +43,36 @@ export async function createWorkspace(
 }
 
 export async function getWorkspace(workspaceId: string) {
-  return prisma.workspace.findUniqueOrThrow({
-    where: { id: workspaceId },
-  });
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!workspace) throw new Error("Workspace not found");
+  return workspace;
 }
 
 export async function getWorkspaceBySlug(slug: string) {
-  return prisma.workspace.findUniqueOrThrow({
-    where: { slug },
-  });
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.slug, slug))
+    .limit(1);
+  if (!workspace) throw new Error("Workspace not found");
+  return workspace;
 }
 
 export async function getUserWorkspaces(userId: string) {
-  const memberships = await prisma.workspaceMember.findMany({
-    where: { userId },
-    include: { workspace: true },
-    orderBy: { createdAt: "desc" },
-  });
+  const memberships = await db
+    .select({
+      workspace: workspaces,
+      role: workspaceMembers.role,
+    })
+    .from(workspaceMembers)
+    .innerJoin(workspaces, eq(workspaceMembers.workspaceId, workspaces.id))
+    .where(eq(workspaceMembers.userId, userId))
+    .orderBy(desc(workspaceMembers.createdAt));
+
   return memberships.map((m) => ({
     ...m.workspace,
     role: m.role,
@@ -72,19 +80,26 @@ export async function getUserWorkspaces(userId: string) {
 }
 
 export async function getWorkspaceMembers(workspaceId: string) {
-  return prisma.workspaceMember.findMany({
-    where: { workspaceId },
-    include: { user: true },
-    orderBy: { createdAt: "asc" },
-  });
+  return db
+    .select({
+      member: workspaceMembers,
+      user: users,
+    })
+    .from(workspaceMembers)
+    .innerJoin(users, eq(workspaceMembers.userId, users.id))
+    .where(eq(workspaceMembers.workspaceId, workspaceId))
+    .orderBy(asc(workspaceMembers.createdAt));
 }
 
 export async function updateWorkspace(
   workspaceId: string,
   data: { name?: string }
 ) {
-  return prisma.workspace.update({
-    where: { id: workspaceId },
-    data,
-  });
+  const [updated] = await db
+    .update(workspaces)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(workspaces.id, workspaceId))
+    .returning();
+  if (!updated) throw new Error("Workspace not found");
+  return updated;
 }

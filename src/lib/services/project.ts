@@ -1,19 +1,22 @@
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { projects, taskSheets } from "@/lib/db/schema";
+import type { ProjectStatus } from "@/lib/db/schema";
+import { eq, and, isNull, desc, asc } from "drizzle-orm";
 import { emitEvent } from "@/lib/events";
-import type { ProjectStatus } from "@prisma/client";
 
 export async function createProject(
   workspaceId: string,
   userId: string,
   data: { name: string; description?: string }
 ) {
-  const project = await prisma.project.create({
-    data: {
+  const [project] = await db
+    .insert(projects)
+    .values({
       workspaceId,
       name: data.name,
       description: data.description,
-    },
-  });
+    })
+    .returning();
 
   await emitEvent({
     workspaceId,
@@ -29,17 +32,34 @@ export async function createProject(
 }
 
 export async function getProject(projectId: string) {
-  return prisma.project.findUniqueOrThrow({
-    where: { id: projectId },
-    include: { taskSheets: { where: { deletedAt: null }, orderBy: { order: "asc" } } },
-  });
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+  if (!project) throw new Error("Project not found");
+
+  const sheets = await db
+    .select()
+    .from(taskSheets)
+    .where(and(eq(taskSheets.projectId, projectId), isNull(taskSheets.deletedAt)))
+    .orderBy(asc(taskSheets.order));
+
+  return { ...project, taskSheets: sheets };
 }
 
 export async function listProjects(workspaceId: string) {
-  return prisma.project.findMany({
-    where: { workspaceId, status: "ACTIVE", deletedAt: null },
-    orderBy: { createdAt: "desc" },
-  });
+  return db
+    .select()
+    .from(projects)
+    .where(
+      and(
+        eq(projects.workspaceId, workspaceId),
+        eq(projects.status, "ACTIVE"),
+        isNull(projects.deletedAt)
+      )
+    )
+    .orderBy(desc(projects.createdAt));
 }
 
 export async function updateProject(
@@ -47,10 +67,12 @@ export async function updateProject(
   userId: string,
   data: { name?: string; description?: string; status?: ProjectStatus }
 ) {
-  const project = await prisma.project.update({
-    where: { id: projectId },
-    data,
-  });
+  const [project] = await db
+    .update(projects)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(projects.id, projectId))
+    .returning();
+  if (!project) throw new Error("Project not found");
 
   await emitEvent({
     workspaceId: project.workspaceId,

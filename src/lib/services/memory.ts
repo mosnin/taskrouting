@@ -1,6 +1,8 @@
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { memoryNodes } from "@/lib/db/schema";
+import type { MemoryNodeType } from "@/lib/db/schema";
+import { eq, and, isNull, or, ilike, desc } from "drizzle-orm";
 import { emitEvent } from "@/lib/events";
-import type { MemoryNodeType } from "@prisma/client";
 
 export async function createMemoryNode(
   workspaceId: string,
@@ -14,8 +16,9 @@ export async function createMemoryNode(
     agentId?: string;
   }
 ) {
-  const node = await prisma.memoryNode.create({
-    data: {
+  const [node] = await db
+    .insert(memoryNodes)
+    .values({
       workspaceId,
       title: data.title,
       content: data.content,
@@ -26,8 +29,8 @@ export async function createMemoryNode(
       createdBy,
       updatedBy: createdBy,
       version: 1,
-    },
-  });
+    })
+    .returning();
 
   await emitEvent({
     workspaceId,
@@ -43,9 +46,13 @@ export async function createMemoryNode(
 }
 
 export async function getMemoryNode(nodeId: string) {
-  return prisma.memoryNode.findUniqueOrThrow({
-    where: { id: nodeId },
-  });
+  const [node] = await db
+    .select()
+    .from(memoryNodes)
+    .where(eq(memoryNodes.id, nodeId))
+    .limit(1);
+  if (!node) throw new Error("Memory node not found");
+  return node;
 }
 
 export async function listMemoryNodes(
@@ -56,16 +63,20 @@ export async function listMemoryNodes(
     taskId?: string;
   }
 ) {
-  return prisma.memoryNode.findMany({
-    where: {
-      workspaceId,
-      deletedAt: null,
-      ...(filters?.type && { type: filters.type }),
-      ...(filters?.projectId && { projectId: filters.projectId }),
-      ...(filters?.taskId && { taskId: filters.taskId }),
-    },
-    orderBy: { updatedAt: "desc" },
-  });
+  const conditions = [
+    eq(memoryNodes.workspaceId, workspaceId),
+    isNull(memoryNodes.deletedAt),
+  ];
+
+  if (filters?.type) conditions.push(eq(memoryNodes.type, filters.type));
+  if (filters?.projectId) conditions.push(eq(memoryNodes.projectId, filters.projectId));
+  if (filters?.taskId) conditions.push(eq(memoryNodes.taskId, filters.taskId));
+
+  return db
+    .select()
+    .from(memoryNodes)
+    .where(and(...conditions))
+    .orderBy(desc(memoryNodes.updatedAt));
 }
 
 export async function updateMemoryNode(
@@ -73,19 +84,23 @@ export async function updateMemoryNode(
   updatedBy: string,
   data: { title?: string; content?: string }
 ) {
-  const existing = await prisma.memoryNode.findUniqueOrThrow({
-    where: { id: nodeId },
-    select: { version: true, workspaceId: true },
-  });
+  const [existing] = await db
+    .select({ version: memoryNodes.version, workspaceId: memoryNodes.workspaceId })
+    .from(memoryNodes)
+    .where(eq(memoryNodes.id, nodeId))
+    .limit(1);
+  if (!existing) throw new Error("Memory node not found");
 
-  const node = await prisma.memoryNode.update({
-    where: { id: nodeId },
-    data: {
+  const [node] = await db
+    .update(memoryNodes)
+    .set({
       ...data,
       updatedBy,
       version: existing.version + 1,
-    },
-  });
+      updatedAt: new Date(),
+    })
+    .where(eq(memoryNodes.id, nodeId))
+    .returning();
 
   await emitEvent({
     workspaceId: existing.workspaceId,
@@ -104,15 +119,18 @@ export async function updateMemoryNode(
 }
 
 export async function searchMemory(workspaceId: string, query: string) {
-  return prisma.memoryNode.findMany({
-    where: {
-      workspaceId,
-      deletedAt: null,
-      OR: [
-        { title: { contains: query, mode: "insensitive" } },
-        { content: { contains: query, mode: "insensitive" } },
-      ],
-    },
-    orderBy: { updatedAt: "desc" },
-  });
+  return db
+    .select()
+    .from(memoryNodes)
+    .where(
+      and(
+        eq(memoryNodes.workspaceId, workspaceId),
+        isNull(memoryNodes.deletedAt),
+        or(
+          ilike(memoryNodes.title, `%${query}%`),
+          ilike(memoryNodes.content, `%${query}%`)
+        )
+      )
+    )
+    .orderBy(desc(memoryNodes.updatedAt));
 }

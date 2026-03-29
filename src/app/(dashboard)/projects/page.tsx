@@ -1,12 +1,11 @@
-import { getSession } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { listProjects } from "@/actions/project";
 import { getUserWorkspaces } from "@/actions/workspace";
 import { ProjectsPageClient } from "./projects-client";
 
 export default async function ProjectsPage() {
-  const session = await getSession();
-  if (!session?.user) redirect("/sign-in");
+  const user = await requireAuth();
 
   const workspaces = await getUserWorkspaces();
   if (!workspaces.length) redirect("/onboarding");
@@ -18,7 +17,7 @@ export default async function ProjectsPage() {
     <ProjectsPageClient
       projects={projects}
       workspaceId={workspace.id}
-      userId={session.user.id}
+      userId={user.id}
     />
   );
 }
