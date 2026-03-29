@@ -1,0 +1,607 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum ProjectStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+  COMPLETED
+}
+
+enum TaskStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  URGENT
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum OwnerType {
+  USER
+  AGENT
+  UNASSIGNED
+}
+
+enum SubtaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+enum AgentStatus {
+  ONLINE
+  OFFLINE
+  BUSY
+  ERROR
+}
+
+enum AgentTokenStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum ClaimStatus {
+  ACTIVE
+  RELEASED
+  COMPLETED
+  EXPIRED
+}
+
+enum ApprovalState {
+  NONE
+  PENDING
+  APPROVED
+  DENIED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+enum ActorType {
+  USER
+  AGENT
+  SYSTEM
+}
+
+enum IntegrationProvider {
+  SLACK
+  GITHUB
+  LINEAR
+  NOTION
+  GOOGLE_DRIVE
+  STRIPE
+}
+
+enum IntegrationStatus {
+  DISCONNECTED
+  CONNECTING
+  AUTHORIZED
+  PROVISIONED
+  HEALTHY
+  NEEDS_ATTENTION
+  DISABLED
+}
+
+enum ProcessingStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+  SKIPPED
+}
+
+enum MemoryNodeType {
+  DOCUMENT
+  CHECKLIST
+  DECISION
+  SPEC
+  RUNBOOK
+  RESEARCH
+  MEETING_NOTES
+  REFERENCE
+}
+
+// ─────────────────────────────────────────────
+// NEXTAUTH MODELS
+// ─────────────────────────────────────────────
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─────────────────────────────────────────────
+// CORE MODELS
+// ─────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  accounts    Account[]
+  sessions    Session[]
+  memberships WorkspaceMember[]
+  approvals   Approval[]        @relation("ApprovalReviewer")
+
+  @@map("users")
+}
+
+model Workspace {
+  id        String    @id @default(uuid())
+  name      String
+  slug      String    @unique
+  image     String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  members                WorkspaceMember[]
+  projects               Project[]
+  tasks                  Task[]
+  queues                 Queue[]
+  agents                 Agent[]
+  memoryNodes            MemoryNode[]
+  runLogs                RunLog[]
+  integrationConnections IntegrationConnection[]
+  externalEvents         ExternalEvent[]
+  externalObjects        ExternalObject[]
+  workflowTemplates      WorkflowTemplate[]
+  capabilities           Capability[]
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid())
+  workspaceId String        @map("workspace_id")
+  userId      String        @map("user_id")
+  role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  workspaceId String        @map("workspace_id")
+  name        String
+  description String?       @db.Text
+  status      ProjectStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  deletedAt   DateTime?     @map("deleted_at")
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  taskSheets  TaskSheet[]
+  tasks       Task[]
+  memoryNodes MemoryNode[]
+
+  @@index([workspaceId, status])
+  @@map("projects")
+}
+
+model TaskSheet {
+  id          String    @id @default(uuid())
+  workspaceId String    @map("workspace_id")
+  projectId   String    @map("project_id")
+  name        String
+  description String?   @db.Text
+  order       Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks   Task[]
+
+  @@index([projectId, order])
+  @@index([workspaceId])
+  @@map("task_sheets")
+}
+
+model Task {
+  id                   String        @id @default(uuid())
+  workspaceId          String        @map("workspace_id")
+  projectId            String        @map("project_id")
+  taskSheetId          String?       @map("task_sheet_id")
+  queueId              String?       @map("queue_id")
+  title                String
+  description          String?       @db.Text
+  status               TaskStatus    @default(BACKLOG)
+  priority             TaskPriority  @default(MEDIUM)
+  ownerType            OwnerType     @default(UNASSIGNED) @map("owner_type")
+  ownerId              String?       @map("owner_id")
+  requiredCapabilities String[]      @map("required_capabilities")
+  sourceProvider       String?       @map("source_provider")
+  sourceObjectType     String?       @map("source_object_type")
+  sourceObjectId       String?       @map("source_object_id")
+  approvalState        ApprovalState @default(NONE) @map("approval_state")
+  confidence           Float?
+  dueAt                DateTime?     @map("due_at")
+  metadata             Json?
+  order                Int           @default(0)
+  createdAt            DateTime      @default(now()) @map("created_at")
+  updatedAt            DateTime      @updatedAt @map("updated_at")
+  deletedAt            DateTime?     @map("deleted_at")
+
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskSheet   TaskSheet? @relation(fields: [taskSheetId], references: [id], onDelete: SetNull)
+  queue       Queue?     @relation(fields: [queueId], references: [id], onDelete: SetNull)
+  subtasks    Subtask[]
+  claims      Claim[]
+  artifacts   Artifact[]
+  approvals   Approval[]
+  memoryNodes MemoryNode[]
+  comments    TaskComment[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, projectId, status])
+  @@index([workspaceId, queueId, status])
+  @@index([workspaceId, ownerType, ownerId])
+  @@index([workspaceId, priority, status])
+  @@map("tasks")
+}
+
+model Subtask {
+  id        String        @id @default(uuid())
+  taskId    String        @map("task_id")
+  title     String
+  status    SubtaskStatus @default(TODO)
+  order     Int           @default(0)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, order])
+  @@map("subtasks")
+}
+
+model TaskComment {
+  id        String    @id @default(uuid())
+  taskId    String    @map("task_id")
+  actorType ActorType @map("actor_type")
+  actorId   String    @map("actor_id")
+  content   String    @db.Text
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@map("task_comments")
+}
+
+model Queue {
+  id                   String    @id @default(uuid())
+  workspaceId          String    @map("workspace_id")
+  name                 String
+  description          String?   @db.Text
+  requiredCapabilities String[]  @map("required_capabilities")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  deletedAt            DateTime? @map("deleted_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+  claims    Claim[]
+
+  @@unique([workspaceId, name])
+  @@map("queues")
+}
+
+model Agent {
+  id           String      @id @default(uuid())
+  workspaceId  String      @map("workspace_id")
+  name         String
+  description  String?     @db.Text
+  status       AgentStatus @default(OFFLINE)
+  capabilities String[]
+  allowedQueueIds String[] @map("allowed_queue_ids")
+  metadata     Json?
+  lastSeenAt   DateTime?   @map("last_seen_at")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+  deletedAt    DateTime?   @map("deleted_at")
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tokens      AgentToken[]
+  claims      Claim[]
+  artifacts   Artifact[]
+  memoryNodes MemoryNode[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, status])
+  @@map("agents")
+}
+
+model AgentToken {
+  id         String           @id @default(uuid())
+  agentId    String           @map("agent_id")
+  tokenHash  String           @unique @map("token_hash")
+  name       String
+  scopes     String[]
+  status     AgentTokenStatus @default(ACTIVE)
+  lastUsedAt DateTime?        @map("last_used_at")
+  expiresAt  DateTime?        @map("expires_at")
+  createdAt  DateTime         @default(now()) @map("created_at")
+  updatedAt  DateTime         @updatedAt @map("updated_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, status])
+  @@map("agent_tokens")
+}
+
+model Claim {
+  id         String      @id @default(uuid())
+  agentId    String      @map("agent_id")
+  taskId     String      @map("task_id")
+  queueId    String      @map("queue_id")
+  status     ClaimStatus @default(ACTIVE)
+  claimedAt  DateTime    @default(now()) @map("claimed_at")
+  releasedAt DateTime?   @map("released_at")
+  createdAt  DateTime    @default(now()) @map("created_at")
+  updatedAt  DateTime    @updatedAt @map("updated_at")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  queue Queue @relation(fields: [queueId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, status])
+  @@index([taskId, status])
+  @@index([queueId, status])
+  @@map("claims")
+}
+
+model Artifact {
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  agentId   String?  @map("agent_id")
+  name      String
+  type      String
+  content   String   @db.Text
+  url       String?
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  task  Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+  @@map("artifacts")
+}
+
+model MemoryNode {
+  id          String         @id @default(uuid())
+  workspaceId String         @map("workspace_id")
+  projectId   String?        @map("project_id")
+  taskId      String?        @map("task_id")
+  agentId     String?        @map("agent_id")
+  title       String
+  content     String         @db.Text
+  type        MemoryNodeType
+  version     Int            @default(1)
+  createdBy   String         @map("created_by")
+  updatedBy   String         @map("updated_by")
+  permissions Json?
+  metadata    Json?
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+  deletedAt   DateTime?      @map("deleted_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task      Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  agent     Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, type])
+  @@index([workspaceId, projectId])
+  @@index([workspaceId, taskId])
+  @@map("memory_nodes")
+}
+
+model RunLog {
+  id          String    @id @default(uuid())
+  workspaceId String    @map("workspace_id")
+  eventType   String    @map("event_type")
+  actorType   ActorType @map("actor_type")
+  actorId     String    @map("actor_id")
+  entityType  String    @map("entity_type")
+  entityId    String    @map("entity_id")
+  metadata    Json?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, entityType, entityId])
+  @@index([workspaceId, eventType])
+  @@map("run_logs")
+}
+
+model Approval {
+  id              String         @id @default(uuid())
+  taskId          String         @map("task_id")
+  requestedByType ActorType      @map("requested_by_type")
+  requestedById   String         @map("requested_by_id")
+  reviewerId      String?        @map("reviewer_id")
+  status          ApprovalStatus @default(PENDING)
+  decisionNote    String?        @db.Text @map("decision_note")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  task     Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  reviewer User? @relation("ApprovalReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@index([taskId, status])
+  @@map("approvals")
+}
+
+model IntegrationConnection {
+  id                   String              @id @default(uuid())
+  workspaceId          String              @map("workspace_id")
+  provider             IntegrationProvider
+  status               IntegrationStatus   @default(DISCONNECTED)
+  encryptedCredentials String?             @map("encrypted_credentials") @db.Text
+  config               Json?
+  webhookSecret        String?             @map("webhook_secret")
+  externalAccountId    String?             @map("external_account_id")
+  externalAccountName  String?             @map("external_account_name")
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider])
+  @@map("integration_connections")
+}
+
+model ExternalEvent {
+  id               String           @id @default(uuid())
+  workspaceId      String           @map("workspace_id")
+  provider         String
+  eventType        String           @map("event_type")
+  payload          Json
+  processingStatus ProcessingStatus @default(PENDING) @map("processing_status")
+  idempotencyKey   String           @unique @map("idempotency_key")
+  errorMessage     String?          @map("error_message") @db.Text
+  processedAt      DateTime?        @map("processed_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, provider, processingStatus])
+  @@index([processingStatus])
+  @@map("external_events")
+}
+
+model ExternalObject {
+  id           String   @id @default(uuid())
+  workspaceId  String   @map("workspace_id")
+  provider     String
+  externalId   String   @map("external_id")
+  externalType String   @map("external_type")
+  internalType String   @map("internal_type")
+  internalId   String   @map("internal_id")
+  metadata     Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider, externalId, externalType])
+  @@index([workspaceId, internalType, internalId])
+  @@map("external_objects")
+}
+
+model WorkflowTemplate {
+  id          String    @id @default(uuid())
+  workspaceId String    @map("workspace_id")
+  name        String
+  description String?   @db.Text
+  trigger     Json
+  conditions  Json?
+  actions     Json
+  enabled     Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, enabled])
+  @@map("workflow_templates")
+}
+
+model Capability {
+  id          String   @id @default(uuid())
+  workspaceId String   @map("workspace_id")
+  name        String
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@map("capabilities")
+}
