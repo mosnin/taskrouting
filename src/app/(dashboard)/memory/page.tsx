@@ -1,14 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Brain, Search } from "lucide-react";
+import { Plus, Brain, Search, Loader2, FileText, ClipboardList, Lightbulb, Code, BookOpen, FlaskConical, Newspaper, Link2, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState } from "@/components/ui/empty-state";
 import {
   Select,
   SelectContent,
@@ -39,6 +39,26 @@ const MEMORY_TYPES = [
   "REFERENCE",
 ] as const;
 
+const typeChipConfig: Record<string, { icon: React.ElementType; color: string; bg: string; activeBg: string; ring: string }> = {
+  DOCUMENT: { icon: FileText, color: "text-blue-600", bg: "bg-blue-50", activeBg: "bg-blue-100", ring: "ring-blue-300" },
+  CHECKLIST: { icon: ClipboardList, color: "text-emerald-600", bg: "bg-emerald-50", activeBg: "bg-emerald-100", ring: "ring-emerald-300" },
+  DECISION: { icon: Lightbulb, color: "text-amber-600", bg: "bg-amber-50", activeBg: "bg-amber-100", ring: "ring-amber-300" },
+  SPEC: { icon: Code, color: "text-violet-600", bg: "bg-violet-50", activeBg: "bg-violet-100", ring: "ring-violet-300" },
+  RUNBOOK: { icon: BookOpen, color: "text-orange-600", bg: "bg-orange-50", activeBg: "bg-orange-100", ring: "ring-orange-300" },
+  RESEARCH: { icon: FlaskConical, color: "text-cyan-600", bg: "bg-cyan-50", activeBg: "bg-cyan-100", ring: "ring-cyan-300" },
+  MEETING_NOTES: { icon: Newspaper, color: "text-pink-600", bg: "bg-pink-50", activeBg: "bg-pink-100", ring: "ring-pink-300" },
+  REFERENCE: { icon: Link2, color: "text-purple-600", bg: "bg-purple-50", activeBg: "bg-purple-100", ring: "ring-purple-300" },
+};
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = React.useState(value);
+  React.useEffect(() => {
+    const handler = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(handler);
+  }, [value, delay]);
+  return debouncedValue;
+}
+
 export default function MemoryPage() {
   const { workspaceId } = useWorkspace();
   const [nodes, setNodes] = React.useState<any[]>([]);
@@ -54,8 +74,11 @@ export default function MemoryPage() {
   const [content, setContent] = React.useState("");
   const [projectId, setProjectId] = React.useState("");
   const [taskId, setTaskId] = React.useState("");
+  const [tagsInput, setTagsInput] = React.useState("");
   const [creating, setCreating] = React.useState(false);
   const [createError, setCreateError] = React.useState<string | null>(null);
+
+  const debouncedSearch = useDebounce(searchQuery, 300);
 
   const fetchNodes = React.useCallback(async () => {
     try {
@@ -75,25 +98,34 @@ export default function MemoryPage() {
   }, [workspaceId, typeFilter]);
 
   React.useEffect(() => {
-    fetchNodes();
-  }, [fetchNodes]);
-
-  async function handleSearch() {
-    if (!searchQuery.trim()) {
+    if (!debouncedSearch.trim()) {
       fetchNodes();
       return;
     }
-    try {
-      setLoading(true);
-      const result = await searchMemory(workspaceId, searchQuery.trim());
-      setNodes(result);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Search failed");
-    } finally {
-      setLoading(false);
+    let cancelled = false;
+    async function doSearch() {
+      try {
+        setLoading(true);
+        const result = await searchMemory(workspaceId, debouncedSearch.trim());
+        if (!cancelled) {
+          // Apply type filter client-side when searching
+          const filtered = typeFilter !== "all"
+            ? result.filter((n: any) => n.type === typeFilter)
+            : result;
+          setNodes(filtered);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Search failed");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
-  }
+    doSearch();
+    return () => { cancelled = true; };
+  }, [debouncedSearch, workspaceId, typeFilter, fetchNodes]);
 
   async function handleCreate() {
     if (!title.trim()) {
@@ -121,6 +153,7 @@ export default function MemoryPage() {
       setContent("");
       setProjectId("");
       setTaskId("");
+      setTagsInput("");
       fetchNodes();
     } catch (err) {
       setCreateError(
@@ -131,56 +164,89 @@ export default function MemoryPage() {
     }
   }
 
+  function toggleTypeFilter(t: string) {
+    setTypeFilter((prev) => (prev === t ? "all" : t));
+  }
+
   return (
     <div>
       <PageHeader
         title="Shared Memory"
         description="Knowledge base shared across agents and team members."
         action={
-          <Button onClick={() => setDialogOpen(true)}>
-            <Plus className="h-4 w-4" />
+          <Button onClick={() => setDialogOpen(true)} size="sm">
+            <Plus className="h-3.5 w-3.5" />
             New Note
           </Button>
         }
       />
 
       <div className="px-8 py-6">
-        {/* Filters */}
-        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="relative flex-1">
+        {/* Search bar */}
+        <div className="mb-4 animate-fade-in">
+          <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search memory nodes..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              className="pl-9"
+              className="pl-9 pr-9"
             />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
-          <Select value={typeFilter} onValueChange={setTypeFilter}>
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="Filter by type" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All types</SelectItem>
-              {MEMORY_TYPES.map((t) => (
-                <SelectItem key={t} value={t}>
-                  {t.replace(/_/g, " ")}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        </div>
+
+        {/* Type filter chips */}
+        <div className="mb-6 flex flex-wrap gap-2 animate-fade-in" style={{ animationDelay: "50ms", animationFillMode: "both" }}>
+          <button
+            onClick={() => setTypeFilter("all")}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-all duration-150",
+              typeFilter === "all"
+                ? "bg-foreground text-background ring-foreground shadow-sm"
+                : "bg-muted/50 text-muted-foreground ring-border hover:bg-muted"
+            )}
+          >
+            All types
+          </button>
+          {MEMORY_TYPES.map((t) => {
+            const config = typeChipConfig[t];
+            const Icon = config.icon;
+            const isActive = typeFilter === t;
+            return (
+              <button
+                key={t}
+                onClick={() => toggleTypeFilter(t)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-all duration-150",
+                  isActive
+                    ? cn(config.activeBg, config.color, config.ring, "shadow-sm")
+                    : "bg-muted/50 text-muted-foreground ring-border hover:bg-muted"
+                )}
+              >
+                <Icon className={cn("h-3 w-3", isActive ? config.color : "text-muted-foreground")} />
+                {t.replace(/_/g, " ")}
+              </button>
+            );
+          })}
         </div>
 
         {/* Content */}
         {loading ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-52 rounded-xl" />
+              <Skeleton key={i} className="h-40 rounded-xl" />
             ))}
           </div>
         ) : error ? (
-          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-6 text-center">
+          <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-8 text-center animate-fade-in">
             <p className="text-sm text-destructive">{error}</p>
             <Button
               variant="outline"
@@ -192,27 +258,51 @@ export default function MemoryPage() {
             </Button>
           </div>
         ) : nodes.length === 0 ? (
-          <EmptyState
-            icon={Brain}
-            title="No memory nodes"
-            description={
-              searchQuery
-                ? "No results found. Try a different search."
-                : "Create your first shared memory note."
-            }
-            action={
-              !searchQuery
-                ? {
-                    label: "New Note",
-                    onClick: () => setDialogOpen(true),
-                  }
-                : undefined
-            }
-          />
+          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card py-20 animate-fade-in">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-purple-100 to-pink-100">
+              <Brain className="h-7 w-7 text-purple-500" />
+            </div>
+            <h3 className="mt-5 text-base font-semibold text-foreground">
+              {searchQuery || typeFilter !== "all" ? "No matching notes" : "No memory nodes yet"}
+            </h3>
+            <p className="mt-1.5 max-w-sm text-center text-sm text-muted-foreground">
+              {searchQuery
+                ? "Try adjusting your search or filter."
+                : "Create your first shared memory note to build your team's knowledge base."}
+            </p>
+            {searchQuery || typeFilter !== "all" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-5"
+                onClick={() => {
+                  setSearchQuery("");
+                  setTypeFilter("all");
+                }}
+              >
+                Clear filters
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                className="mt-5"
+                onClick={() => setDialogOpen(true)}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Create your first note
+              </Button>
+            )}
+          </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {nodes.map((node) => (
-              <MemoryNodeCard key={node.id} node={node} />
+            {nodes.map((node, index) => (
+              <div
+                key={node.id}
+                className="animate-fade-in"
+                style={{ animationDelay: `${index * 40}ms`, animationFillMode: "both" }}
+              >
+                <MemoryNodeCard node={node} />
+              </div>
             ))}
           </div>
         )}
@@ -220,7 +310,7 @@ export default function MemoryPage() {
 
       {/* Create dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>New Memory Note</DialogTitle>
             <DialogDescription>
@@ -240,19 +330,30 @@ export default function MemoryPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="mem-type">Type</Label>
-              <Select value={type} onValueChange={setType}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MEMORY_TYPES.map((t) => (
-                    <SelectItem key={t} value={t}>
+              <Label>Type</Label>
+              <div className="flex flex-wrap gap-2">
+                {MEMORY_TYPES.map((t) => {
+                  const config = typeChipConfig[t];
+                  const Icon = config.icon;
+                  const isActive = type === t;
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setType(t)}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium ring-1 ring-inset transition-all duration-150",
+                        isActive
+                          ? cn(config.activeBg, config.color, config.ring, "shadow-sm")
+                          : "bg-muted/50 text-muted-foreground ring-border hover:bg-muted"
+                      )}
+                    >
+                      <Icon className={cn("h-3 w-3", isActive ? config.color : "text-muted-foreground")} />
                       {t.replace(/_/g, " ")}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -263,7 +364,33 @@ export default function MemoryPage() {
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 rows={6}
+                className="resize-none"
               />
+              <p className="text-[11px] text-muted-foreground">
+                {content.length.toLocaleString()} / 100,000 characters
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="mem-tags">Tags</Label>
+              <Input
+                id="mem-tags"
+                placeholder="Comma-separated tags, e.g. deploy, ci, infra"
+                value={tagsInput}
+                onChange={(e) => setTagsInput(e.target.value)}
+              />
+              {tagsInput && (
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {tagsInput.split(",").filter(t => t.trim()).map((tag, i) => (
+                    <span
+                      key={i}
+                      className="text-[10px] text-muted-foreground bg-muted rounded-full px-2 py-0.5"
+                    >
+                      #{tag.trim()}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -292,7 +419,9 @@ export default function MemoryPage() {
             </div>
 
             {createError && (
-              <p className="text-sm text-destructive">{createError}</p>
+              <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2">
+                <p className="text-sm text-destructive">{createError}</p>
+              </div>
             )}
           </div>
 
@@ -305,6 +434,7 @@ export default function MemoryPage() {
               Cancel
             </Button>
             <Button onClick={handleCreate} disabled={creating}>
+              {creating && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               {creating ? "Creating..." : "Create Note"}
             </Button>
           </DialogFooter>

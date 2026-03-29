@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { Plug } from "lucide-react";
+import { Plug, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/layout/header";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ProviderCard } from "@/components/integrations/provider-card";
@@ -13,13 +14,13 @@ import {
   disconnectIntegration,
 } from "@/actions/integration";
 
-const PROVIDER_NAMES: Record<string, string> = {
-  GITHUB: "GitHub",
-  SLACK: "Slack",
-  LINEAR: "Linear",
-  NOTION: "Notion",
-  GOOGLE_DRIVE: "Google Drive",
-  STRIPE: "Stripe",
+const PROVIDER_META: Record<string, { name: string; description: string; icon: string; comingSoon?: boolean }> = {
+  GITHUB: { name: "GitHub", description: "Sync issues, PRs, and automate code review workflows.", icon: "github" },
+  SLACK: { name: "Slack", description: "Post updates and receive commands from Slack channels.", icon: "slack" },
+  LINEAR: { name: "Linear", description: "Import and sync Linear issues with task queues.", icon: "linear" },
+  NOTION: { name: "Notion", description: "Connect Notion pages and databases as memory nodes.", icon: "notion" },
+  GOOGLE_DRIVE: { name: "Google Drive", description: "Attach and index files from Google Drive.", icon: "google_drive" },
+  STRIPE: { name: "Stripe", description: "Monitor payments and trigger billing-related tasks.", icon: "stripe", comingSoon: true },
 };
 
 export default function IntegrationsPage() {
@@ -74,29 +75,34 @@ export default function IntegrationsPage() {
     }
   }
 
+  const connected = integrations.filter((i) => i.connected);
+  const available = integrations.filter((i) => !i.connected);
+
   return (
     <div>
       <PageHeader
         title="Integrations"
-        description="Connect third-party services to your workspace."
+        description="Connect your favorite tools and services to supercharge your workspace."
       />
 
-      <div className="px-8 py-6">
+      <div className="px-8 py-6 space-y-8">
         {loading ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-52 rounded-xl" />
+              <Skeleton key={i} className="h-44 rounded-xl" />
             ))}
           </div>
         ) : error ? (
-          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-6 text-center">
+          <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-8 text-center">
             <p className="text-sm text-destructive">{error}</p>
-            <button
-              className="mt-3 text-sm text-muted-foreground underline"
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
               onClick={fetchIntegrations}
             >
               Retry
-            </button>
+            </Button>
           </div>
         ) : integrations.length === 0 ? (
           <EmptyState
@@ -105,22 +111,83 @@ export default function IntegrationsPage() {
             description="Integration providers will appear here."
           />
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {integrations.map((integration) => (
-              <ProviderCard
-                key={integration.provider}
-                provider={integration.provider}
-                name={PROVIDER_NAMES[integration.provider] ?? integration.provider}
-                status={integration.status}
-                connected={integration.connected}
-                externalAccountName={integration.externalAccountName}
-                connectionId={integration.connectionId}
-                onConnect={() => handleConnect(integration.provider)}
-                onDisconnect={() => handleDisconnect(integration.provider)}
-                loading={actionLoading === integration.provider}
-              />
-            ))}
-          </div>
+          <>
+            {/* Connected integrations */}
+            {connected.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <h2 className="text-sm font-semibold text-foreground">Connected</h2>
+                  <span className="text-xs text-muted-foreground">({connected.length})</span>
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {connected.map((integration) => {
+                    const meta = PROVIDER_META[integration.provider];
+                    return (
+                      <ProviderCard
+                        key={integration.provider}
+                        provider={{
+                          id: integration.provider,
+                          name: meta?.name ?? integration.provider,
+                          description: meta?.description ?? "",
+                          icon: meta?.icon ?? integration.provider.toLowerCase(),
+                          connected: true,
+                          status: integration.status,
+                        }}
+                        onConnect={() => handleConnect(integration.provider)}
+                        onDisconnect={() => handleDisconnect(integration.provider)}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Divider */}
+            {connected.length > 0 && available.length > 0 && (
+              <div className="border-t" />
+            )}
+
+            {/* Available integrations */}
+            {available.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                  <h2 className="text-sm font-semibold text-foreground">Available</h2>
+                  <span className="text-xs text-muted-foreground">({available.length})</span>
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {available.map((integration) => {
+                    const meta = PROVIDER_META[integration.provider];
+                    const isComingSoon = meta?.comingSoon;
+                    return (
+                      <div key={integration.provider} className="relative">
+                        {isComingSoon && (
+                          <div className="absolute -top-2 -right-2 z-10">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 px-2.5 py-0.5 text-[10px] font-semibold text-white shadow-sm">
+                              <Sparkles className="h-3 w-3" />
+                              Coming soon
+                            </span>
+                          </div>
+                        )}
+                        <ProviderCard
+                          provider={{
+                            id: integration.provider,
+                            name: meta?.name ?? integration.provider,
+                            description: meta?.description ?? "",
+                            icon: meta?.icon ?? integration.provider.toLowerCase(),
+                            connected: false,
+                            status: integration.status,
+                          }}
+                          onConnect={isComingSoon ? undefined : () => handleConnect(integration.provider)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

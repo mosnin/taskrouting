@@ -1,125 +1,75 @@
 "use client";
 
-import * as React from "react";
-import {
-  GitBranch,
-  MessageSquare,
-  Layers,
-  BookOpen,
-  HardDrive,
-  CreditCard,
-} from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-
-const providerIcons: Record<string, React.ElementType> = {
-  GITHUB: GitBranch,
-  SLACK: MessageSquare,
-  LINEAR: Layers,
-  NOTION: BookOpen,
-  GOOGLE_DRIVE: HardDrive,
-  STRIPE: CreditCard,
-};
-
-const providerDescriptions: Record<string, string> = {
-  GITHUB: "Sync issues, PRs, and automate code review workflows.",
-  SLACK: "Post updates and receive commands from Slack channels.",
-  LINEAR: "Import and sync Linear issues with task queues.",
-  NOTION: "Connect Notion pages and databases as memory nodes.",
-  GOOGLE_DRIVE: "Attach and index files from Google Drive.",
-  STRIPE: "Monitor payments and trigger billing-related tasks.",
-};
-
-const statusConfig: Record<
-  string,
-  { variant: "default" | "secondary" | "destructive" | "outline"; label: string; dot: string }
-> = {
-  HEALTHY: { variant: "default", label: "Healthy", dot: "bg-emerald-500" },
-  NEEDS_ATTENTION: { variant: "secondary", label: "Needs Attention", dot: "bg-amber-500" },
-  CONNECTING: { variant: "secondary", label: "Connecting", dot: "bg-amber-500" },
-  AUTHORIZED: { variant: "default", label: "Connected", dot: "bg-emerald-500" },
-  PROVISIONED: { variant: "default", label: "Connected", dot: "bg-emerald-500" },
-  DISCONNECTED: { variant: "outline", label: "Disconnected", dot: "bg-zinc-400" },
-  DISABLED: { variant: "outline", label: "Disabled", dot: "bg-zinc-400" },
-};
+import { Button } from "@/components/ui/button";
+import { GitBranch, MessageSquare, Triangle, FileSpreadsheet, Cloud, CreditCard, Check, Plug } from "lucide-react";
 
 interface ProviderCardProps {
-  provider: string;
-  name: string;
-  status: string;
-  connected: boolean;
-  externalAccountName?: string | null;
-  connectionId?: string | null;
-  onConnect: () => void;
-  onDisconnect: () => void;
-  loading?: boolean;
+  provider: {
+    id: string;
+    name: string;
+    description: string;
+    icon: string;
+    connected: boolean;
+    status?: string;
+  };
+  onConnect?: () => void;
+  onDisconnect?: () => void;
 }
 
-export function ProviderCard({
-  provider,
-  name,
-  status,
-  connected,
-  externalAccountName,
-  onConnect,
-  onDisconnect,
-  loading,
-}: ProviderCardProps) {
-  const Icon = providerIcons[provider] ?? Layers;
-  const description = providerDescriptions[provider] ?? "";
-  const statusCfg = statusConfig[status] ?? statusConfig.DISCONNECTED;
+const providerIcons: Record<string, React.ElementType> = {
+  github: GitBranch,
+  slack: MessageSquare,
+  linear: Triangle,
+  notion: FileSpreadsheet,
+  google_drive: Cloud,
+  stripe: CreditCard,
+};
+
+const providerColors: Record<string, { gradient: string; bg: string }> = {
+  github: { gradient: "from-gray-700 to-gray-900", bg: "bg-gray-50" },
+  slack: { gradient: "from-purple-600 to-pink-600", bg: "bg-purple-50" },
+  linear: { gradient: "from-indigo-500 to-violet-600", bg: "bg-indigo-50" },
+  notion: { gradient: "from-gray-800 to-black", bg: "bg-gray-50" },
+  google_drive: { gradient: "from-blue-500 to-green-500", bg: "bg-blue-50" },
+  stripe: { gradient: "from-violet-600 to-indigo-600", bg: "bg-violet-50" },
+};
+
+export function ProviderCard({ provider, onConnect, onDisconnect }: ProviderCardProps) {
+  const Icon = providerIcons[provider.icon] || Plug;
+  const colors = providerColors[provider.icon] || { gradient: "from-gray-500 to-gray-700", bg: "bg-gray-50" };
 
   return (
-    <Card className="shadow-sm">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-              <Icon className="h-5 w-5 text-foreground" />
-            </div>
-            <div>
-              <CardTitle className="text-sm font-semibold">{name}</CardTitle>
-              {connected && externalAccountName && (
-                <p className="text-xs text-muted-foreground">
-                  {externalAccountName}
-                </p>
-              )}
-            </div>
-          </div>
-          <Badge
-            variant={statusCfg.variant}
-            className="flex items-center gap-1.5 text-[11px]"
-          >
-            <div className={cn("h-1.5 w-1.5 rounded-full", statusCfg.dot)} />
-            {statusCfg.label}
-          </Badge>
+    <div className={cn(
+      "rounded-xl border bg-card p-5 shadow-[var(--shadow-card)] hover:shadow-[var(--shadow-card-hover)] transition-all duration-200",
+      provider.connected && "border-primary/20"
+    )}>
+      <div className="flex items-start gap-4 mb-4">
+        <div className={cn("rounded-xl bg-gradient-to-br p-3", colors.gradient)}>
+          <Icon className="h-5 w-5 text-white" />
         </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <p className="text-sm text-muted-foreground">{description}</p>
-        {connected ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full"
-            onClick={onDisconnect}
-            disabled={loading}
-          >
-            {loading ? "Disconnecting..." : "Disconnect"}
-          </Button>
-        ) : (
-          <Button
-            size="sm"
-            className="w-full"
-            onClick={onConnect}
-            disabled={loading}
-          >
-            {loading ? "Connecting..." : "Connect"}
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold text-sm">{provider.name}</h3>
+            {provider.connected && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-200">
+                <Check className="h-3 w-3" />
+                Connected
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">{provider.description}</p>
+        </div>
+      </div>
+
+      <Button
+        variant={provider.connected ? "outline" : "default"}
+        size="sm"
+        className="w-full"
+        onClick={provider.connected ? onDisconnect : onConnect}
+      >
+        {provider.connected ? "Disconnect" : "Connect"}
+      </Button>
+    </div>
   );
 }

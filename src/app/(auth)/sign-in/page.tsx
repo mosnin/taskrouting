@@ -1,143 +1,144 @@
 "use client";
 
-import { useState } from "react";
+import * as React from "react";
 import { signIn } from "next-auth/react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Zap, GitBranch as Github, Loader2 } from "lucide-react";
+import { Zap, GitBranch, ArrowRight, Sparkles } from "lucide-react";
+import Link from "next/link";
 
 export default function SignInPage() {
-  const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [isGitHubLoading, setIsGitHubLoading] = useState(false);
+  const [isPending, startTransition] = React.useTransition();
+  const [error, setError] = React.useState("");
+  const router = useRouter();
 
-  const handleCredentialsSignIn = async (e: React.FormEvent) => {
+  function handleCredentials(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setIsLoading(true);
-    try {
-      await signIn("credentials", {
-        email,
-        name,
-        callbackUrl: "/",
+    const fd = new FormData(e.currentTarget);
+    startTransition(async () => {
+      const res = await signIn("credentials", {
+        email: fd.get("email") as string,
+        name: fd.get("name") as string,
+        redirect: false,
       });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGitHubSignIn = async () => {
-    setIsGitHubLoading(true);
-    await signIn("github", { callbackUrl: "/" });
-  };
+      if (res?.error) {
+        setError("Failed to sign in");
+      } else {
+        router.push("/");
+      }
+    });
+  }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 px-4">
-      <div className="w-full max-w-sm">
-        {/* Brand */}
-        <div className="mb-8 flex flex-col items-center">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-900">
-            <Zap className="h-5 w-5 text-white" />
-          </div>
-          <h1 className="mt-4 text-xl font-semibold tracking-tight">
-            Sign in to TaskRouting
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Multi-agent task orchestration
-          </p>
+    <div className="min-h-screen flex">
+      {/* Left panel - branding */}
+      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-violet-600 via-purple-600 to-indigo-700 p-12 flex-col justify-between relative overflow-hidden">
+        {/* Background decoration */}
+        <div className="absolute inset-0 opacity-10">
+          <div className="absolute top-20 left-10 w-72 h-72 bg-white rounded-full blur-3xl" />
+          <div className="absolute bottom-20 right-10 w-96 h-96 bg-white rounded-full blur-3xl" />
         </div>
 
-        <Card className="shadow-sm">
-          <CardContent className="pt-6">
-            {/* GitHub OAuth */}
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={handleGitHubSignIn}
-              disabled={isGitHubLoading}
-            >
-              {isGitHubLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Github className="h-4 w-4" />
-              )}
-              Continue with GitHub
-            </Button>
-
-            {/* Divider */}
-            <div className="relative my-6">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-border" />
-              </div>
-              <div className="relative flex justify-center text-xs uppercase">
-                <span className="bg-card px-2 text-muted-foreground">
-                  Or continue with
-                </span>
-              </div>
+        <div className="relative z-10">
+          <div className="flex items-center gap-2 text-white">
+            <div className="rounded-xl bg-white/20 p-2 backdrop-blur-sm">
+              <Zap className="h-6 w-6" />
             </div>
+            <span className="text-xl font-bold">TaskRouting</span>
+          </div>
+        </div>
 
-            {/* Dev credentials form */}
-            <form onSubmit={handleCredentialsSignIn} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="name">Name</Label>
-                <Input
-                  id="name"
-                  type="text"
-                  placeholder="Your name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={isLoading || !email}
-              >
-                {isLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : null}
-                Sign in
-              </Button>
-            </form>
+        <div className="relative z-10 space-y-6">
+          <h1 className="text-4xl font-bold text-white leading-tight">
+            The control plane for<br />multi-agent work
+          </h1>
+          <p className="text-lg text-white/80 max-w-md">
+            Route tasks, coordinate agents, share memory, and audit everything — all from one place.
+          </p>
+          <div className="flex items-center gap-6 text-white/60 text-sm">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4" />
+              <span>AI-native routing</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4" />
+              <span>MCP-first</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4" />
+              <span>Full audit trail</span>
+            </div>
+          </div>
+        </div>
 
-            <p className="mt-2 text-center text-[11px] text-muted-foreground">
-              Dev mode: credentials sign-in is only available in development.
-            </p>
-          </CardContent>
+        <div className="relative z-10 text-white/40 text-sm">
+          &copy; 2026 TaskRouting. All rights reserved.
+        </div>
+      </div>
 
-          <CardFooter className="justify-center border-t border-border py-4">
-            <p className="text-sm text-muted-foreground">
-              Don&apos;t have an account?{" "}
-              <Link
-                href="/sign-up"
-                className="font-medium text-foreground underline-offset-4 hover:underline"
-              >
-                Sign up
-              </Link>
-            </p>
-          </CardFooter>
-        </Card>
+      {/* Right panel - form */}
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="w-full max-w-sm space-y-8 animate-fade-in">
+          {/* Mobile logo */}
+          <div className="flex items-center gap-2 lg:hidden">
+            <div className="rounded-xl gradient-primary p-2">
+              <Zap className="h-5 w-5 text-white" />
+            </div>
+            <span className="text-lg font-bold">TaskRouting</span>
+          </div>
+
+          <div>
+            <h2 className="text-2xl font-bold">Welcome back</h2>
+            <p className="text-muted-foreground mt-1">Sign in to your workspace</p>
+          </div>
+
+          {/* GitHub OAuth */}
+          <Button
+            variant="outline"
+            className="w-full gap-2 h-11"
+            onClick={() => signIn("github", { callbackUrl: "/" })}
+          >
+            <GitBranch className="h-4 w-4" />
+            Continue with GitHub
+          </Button>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-background px-2 text-muted-foreground">or continue with email</span>
+            </div>
+          </div>
+
+          {/* Credentials form */}
+          <form onSubmit={handleCredentials} className="space-y-4">
+            <div className="space-y-2">
+              <Label>Email</Label>
+              <Input name="email" type="email" placeholder="you@company.com" required />
+            </div>
+            <div className="space-y-2">
+              <Label>Display Name</Label>
+              <Input name="name" placeholder="Your name" required />
+            </div>
+            {error && (
+              <p className="text-sm text-destructive">{error}</p>
+            )}
+            <Button type="submit" className="w-full gap-2 h-11" disabled={isPending}>
+              {isPending ? "Signing in..." : "Sign In"}
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          </form>
+
+          <p className="text-center text-sm text-muted-foreground">
+            Don&apos;t have an account?{" "}
+            <Link href="/sign-up" className="text-primary font-medium hover:underline">
+              Sign up
+            </Link>
+          </p>
+        </div>
       </div>
     </div>
   );

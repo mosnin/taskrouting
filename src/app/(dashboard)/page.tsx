@@ -1,170 +1,191 @@
 import { getSession } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/layout/header";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { StatsCard } from "@/components/dashboard/stats-card";
+import { ActivityFeed } from "@/components/dashboard/activity-feed";
+import { TaskStatusChart } from "@/components/dashboard/task-status-chart";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  ListTodo,
+  CheckSquare,
   Bot,
   Inbox,
   ShieldCheck,
+  Zap,
   ArrowUpRight,
-  Clock,
 } from "lucide-react";
-
-const stats = [
-  {
-    title: "Total Tasks",
-    value: "128",
-    change: "+12 this week",
-    icon: ListTodo,
-    iconColor: "text-blue-600",
-    iconBg: "bg-blue-50",
-  },
-  {
-    title: "Active Agents",
-    value: "6",
-    change: "2 idle",
-    icon: Bot,
-    iconColor: "text-violet-600",
-    iconBg: "bg-violet-50",
-  },
-  {
-    title: "Open Queues",
-    value: "4",
-    change: "23 items pending",
-    icon: Inbox,
-    iconColor: "text-amber-600",
-    iconBg: "bg-amber-50",
-  },
-  {
-    title: "Pending Approvals",
-    value: "3",
-    change: "1 urgent",
-    icon: ShieldCheck,
-    iconColor: "text-emerald-600",
-    iconBg: "bg-emerald-50",
-  },
-];
-
-const recentActivity = [
-  {
-    id: "1",
-    action: "Task completed",
-    description: "Agent code-review-bot finished PR #142 review",
-    timestamp: "2 minutes ago",
-  },
-  {
-    id: "2",
-    action: "Approval requested",
-    description: "deploy-agent requires approval for production deployment",
-    timestamp: "8 minutes ago",
-  },
-  {
-    id: "3",
-    action: "Agent started",
-    description: "test-runner-bot picked up task from CI queue",
-    timestamp: "15 minutes ago",
-  },
-  {
-    id: "4",
-    action: "Queue created",
-    description: 'New queue "bug-triage" added to project Alpha',
-    timestamp: "1 hour ago",
-  },
-  {
-    id: "5",
-    action: "Integration connected",
-    description: "GitHub webhook configured for org/repo",
-    timestamp: "3 hours ago",
-  },
-];
+import Link from "next/link";
 
 export default async function DashboardPage() {
   const session = await getSession();
-  const firstName = session?.user?.name?.split(" ")[0] ?? "there";
+  if (!session?.user) redirect("/sign-in");
+
+  // Get the user's first workspace
+  const membership = await prisma.workspaceMember.findFirst({
+    where: { userId: session.user.id },
+    include: { workspace: true },
+  });
+
+  if (!membership) redirect("/onboarding");
+
+  const workspaceId = membership.workspaceId;
+
+  const [
+    totalTasks,
+    agents,
+    queueCount,
+    pendingApprovals,
+    activeClaims,
+    recentLogs,
+    tasksByStatus,
+  ] = await Promise.all([
+    prisma.task.count({ where: { workspaceId, deletedAt: null } }),
+    prisma.agent.findMany({ where: { workspaceId, deletedAt: null }, select: { status: true } }),
+    prisma.queue.count({ where: { workspaceId, deletedAt: null } }),
+    prisma.approval.count({ where: { status: "PENDING", task: { workspaceId } } }),
+    prisma.claim.count({ where: { status: "ACTIVE", queue: { workspaceId } } }),
+    prisma.runLog.findMany({ where: { workspaceId }, orderBy: { createdAt: "desc" }, take: 15 }),
+    prisma.task.groupBy({ by: ["status"], where: { workspaceId, deletedAt: null }, _count: true }),
+  ]);
+
+  const onlineAgents = agents.filter((a) => a.status === "ONLINE").length;
+  const totalAgents = agents.length;
+
+  const statusData = tasksByStatus.map((g) => ({ status: g.status, count: g._count }));
+
+  const activity = recentLogs.map((log) => ({
+    id: log.id,
+    eventType: log.eventType,
+    entityType: log.entityType ?? "",
+    entityId: log.entityId ?? "",
+    actorType: log.actorType,
+    actorId: log.actorId ?? "",
+    message: log.eventType.replace(/_/g, " "),
+    createdAt: log.createdAt.toISOString(),
+  }));
+
+  const firstName = session.user.name?.split(" ")[0] || "there";
 
   return (
-    <div>
+    <div className="space-y-6 p-6 animate-fade-in">
       <PageHeader
         title={`Welcome back, ${firstName}`}
-        description="Here's what's happening across your workspace."
+        description="Here's what's happening in your workspace"
       />
 
-      <div className="px-8 py-6">
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {stats.map((stat) => (
-            <Card key={stat.title} className="shadow-sm">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardDescription className="text-sm font-medium">
-                  {stat.title}
-                </CardDescription>
-                <div
-                  className={`flex h-8 w-8 items-center justify-center rounded-lg ${stat.iconBg}`}
-                >
-                  <stat.icon className={`h-4 w-4 ${stat.iconColor}`} />
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{stat.value}</div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {stat.change}
-                </p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatsCard
+          title="Total Tasks"
+          value={totalTasks}
+          subtitle={`${activeClaims} actively claimed`}
+          icon={CheckSquare}
+          color="purple"
+        />
+        <StatsCard
+          title="Agents"
+          value={totalAgents}
+          subtitle={`${onlineAgents} online`}
+          icon={Bot}
+          color="blue"
+        />
+        <StatsCard
+          title="Queues"
+          value={queueCount}
+          icon={Inbox}
+          color="green"
+        />
+        <StatsCard
+          title="Pending Approvals"
+          value={pendingApprovals}
+          icon={ShieldCheck}
+          color={pendingApprovals > 0 ? "amber" : "green"}
+        />
+      </div>
+
+      {/* Main Content */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Task Distribution */}
+        <Card className="lg:col-span-1">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-semibold">Task Distribution</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {statusData.length > 0 ? (
+              <TaskStatusChart data={statusData} />
+            ) : (
+              <p className="text-sm text-muted-foreground py-8 text-center">No tasks yet</p>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Recent Activity */}
-        <div className="mt-8">
-          <Card className="shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-base">Recent Activity</CardTitle>
-              <CardDescription>
-                Latest events across your workspace
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-0">
-                {recentActivity.map((item, index) => (
-                  <div
-                    key={item.id}
-                    className={`flex items-start gap-4 py-3 ${
-                      index !== recentActivity.length - 1
-                        ? "border-b border-border"
-                        : ""
-                    }`}
-                  >
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-100">
-                      {item.action.includes("completed") ? (
-                        <ArrowUpRight className="h-4 w-4 text-emerald-600" />
-                      ) : (
-                        <Clock className="h-4 w-4 text-zinc-500" />
-                      )}
-                    </div>
-                    <div className="flex-1 overflow-hidden">
-                      <p className="text-sm font-medium text-foreground">
-                        {item.action}
-                      </p>
-                      <p className="truncate text-sm text-muted-foreground">
-                        {item.description}
-                      </p>
-                    </div>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {item.timestamp}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <Card className="lg:col-span-2">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between">
+            <CardTitle className="text-base font-semibold">Recent Activity</CardTitle>
+            <Link
+              href="/audit"
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+            >
+              View all <ArrowUpRight className="h-3 w-3" />
+            </Link>
+          </CardHeader>
+          <CardContent className="px-3">
+            {activity.length > 0 ? (
+              <ActivityFeed items={activity} />
+            ) : (
+              <p className="text-sm text-muted-foreground py-8 text-center">No activity yet. Create a project to get started.</p>
+            )}
+          </CardContent>
+        </Card>
       </div>
+
+      {/* Quick Actions */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base font-semibold">Quick Actions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Link
+              href="/projects"
+              className="flex items-center gap-3 rounded-xl border p-4 hover:bg-accent/50 hover:border-primary/20 transition-all group"
+            >
+              <div className="rounded-lg bg-purple-50 p-2 ring-1 ring-purple-100">
+                <Zap className="h-4 w-4 text-purple-600" />
+              </div>
+              <div>
+                <p className="text-sm font-medium group-hover:text-primary transition-colors">New Project</p>
+                <p className="text-xs text-muted-foreground">Create a project</p>
+              </div>
+            </Link>
+            <Link
+              href="/agents"
+              className="flex items-center gap-3 rounded-xl border p-4 hover:bg-accent/50 hover:border-primary/20 transition-all group"
+            >
+              <div className="rounded-lg bg-blue-50 p-2 ring-1 ring-blue-100">
+                <Bot className="h-4 w-4 text-blue-600" />
+              </div>
+              <div>
+                <p className="text-sm font-medium group-hover:text-primary transition-colors">Register Agent</p>
+                <p className="text-xs text-muted-foreground">Connect an AI agent</p>
+              </div>
+            </Link>
+            <Link
+              href="/queues"
+              className="flex items-center gap-3 rounded-xl border p-4 hover:bg-accent/50 hover:border-primary/20 transition-all group"
+            >
+              <div className="rounded-lg bg-emerald-50 p-2 ring-1 ring-emerald-100">
+                <Inbox className="h-4 w-4 text-emerald-600" />
+              </div>
+              <div>
+                <p className="text-sm font-medium group-hover:text-primary transition-colors">New Queue</p>
+                <p className="text-xs text-muted-foreground">Add a task queue</p>
+              </div>
+            </Link>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

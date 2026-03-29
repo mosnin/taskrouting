@@ -63,3 +63,9 @@ export async function getAgent(agentId: string, workspaceId: string) {
   await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
   return agentService.getAgent(agentId);
 }
+
+export async function deleteAgent(agentId: string, workspaceId: string) {
+  await requireWorkspaceRole(workspaceId, ["OWNER", "ADMIN"]);
+  await agentService.deleteAgent(agentId);
+  revalidatePath("/agents");
+}

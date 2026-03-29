@@ -55,3 +55,10 @@ export async function updateAgentStatus(agentId: string, status: AgentStatus) {
     },
   });
 }
+
+export async function deleteAgent(agentId: string) {
+  return prisma.agent.update({
+    where: { id: agentId },
+    data: { deletedAt: new Date() },
+  });
+}

@@ -1,16 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { ChevronDown, ChevronRight, Inbox, Loader2 } from "lucide-react";
+import * as React from "react";
 import { cn } from "@/lib/utils";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { CapabilityBadge } from "@/components/shared/capability-badge";
+import { ChevronDown, ChevronRight, Inbox, Zap, Loader2 } from "lucide-react";
 import { TaskCard } from "@/components/tasks/task-card";
 import { getQueueTasks } from "@/actions/queue";
 import { useWorkspace } from "@/hooks/use-workspace";
@@ -28,8 +20,8 @@ interface QueueCardProps {
 
 export function QueueCard({ queue, onTaskClick }: QueueCardProps) {
   const { workspaceId } = useWorkspace();
-  const [expanded, setExpanded] = useState(false);
-  const [tasks, setTasks] = useState<Array<{
+  const [expanded, setExpanded] = React.useState(false);
+  const [tasks, setTasks] = React.useState<Array<{
     id: string;
     title: string;
     status: string;
@@ -39,7 +31,12 @@ export function QueueCard({ queue, onTaskClick }: QueueCardProps) {
     queueId?: string | null;
     dueAt?: Date | null;
   }> | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, startTransition] = React.useTransition();
+
+  const taskCount = queue.taskCount;
+  const maxDepth = 20;
+  const depthPct = Math.min((taskCount / maxDepth) * 100, 100);
+  const depthColor = depthPct > 80 ? "bg-red-500" : depthPct > 50 ? "bg-amber-500" : "bg-emerald-500";
 
   function handleToggle() {
     if (!expanded && tasks === null) {
@@ -51,69 +48,64 @@ export function QueueCard({ queue, onTaskClick }: QueueCardProps) {
     setExpanded(!expanded);
   }
 
-  // depth bar color based on task count
-  const depthPercent = Math.min(queue.taskCount / 20, 1);
-  const depthColor =
-    depthPercent > 0.7
-      ? "bg-red-500"
-      : depthPercent > 0.4
-        ? "bg-yellow-500"
-        : "bg-emerald-500";
-
   return (
-    <Card className="shadow-sm">
-      <CardHeader
-        className="cursor-pointer select-none"
+    <div className="rounded-xl border bg-card shadow-[var(--shadow-card)] hover:shadow-[var(--shadow-card-hover)] transition-all duration-200 overflow-hidden">
+      <button
         onClick={handleToggle}
+        className="w-full flex items-center gap-4 p-4 text-left hover:bg-muted/30 transition-colors"
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-100">
-              <Inbox className="h-4 w-4 text-zinc-500" />
-            </div>
-            <div>
-              <CardTitle className="text-sm">{queue.name}</CardTitle>
-              {queue.description && (
-                <CardDescription className="mt-0.5">
-                  {queue.description}
-                </CardDescription>
-              )}
-            </div>
+        <div className="rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 p-2.5 shrink-0">
+          <Inbox className="h-4 w-4 text-white" />
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold text-sm">{queue.name}</h3>
+            <span className="text-xs text-muted-foreground bg-muted rounded-full px-2 py-0.5 tabular-nums">
+              {taskCount} task{taskCount !== 1 ? "s" : ""}
+            </span>
           </div>
-          <div className="flex items-center gap-3">
-            {/* Depth indicator */}
-            <div className="flex items-center gap-2">
-              <div className="h-1.5 w-16 overflow-hidden rounded-full bg-zinc-100">
-                <div
-                  className={cn("h-full rounded-full transition-all", depthColor)}
-                  style={{ width: `${depthPercent * 100}%` }}
-                />
+          {queue.description && (
+            <p className="text-xs text-muted-foreground mt-0.5 truncate">{queue.description}</p>
+          )}
+
+          {/* Capabilities */}
+          {queue.requiredCapabilities.length > 0 && (
+            <div className="flex items-center gap-1 mt-2">
+              <Zap className="h-3 w-3 text-purple-500 shrink-0" />
+              <div className="flex gap-1 flex-wrap">
+                {queue.requiredCapabilities.map((cap) => (
+                  <span
+                    key={cap}
+                    className="inline-flex items-center rounded-md bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 ring-1 ring-inset ring-purple-200"
+                  >
+                    {cap}
+                  </span>
+                ))}
               </div>
-              <span className="text-xs font-medium text-muted-foreground tabular-nums">
-                {queue.taskCount}
-              </span>
             </div>
-            {expanded ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            )}
+          )}
+
+          {/* Depth bar */}
+          <div className="flex items-center gap-2 mt-2">
+            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+              <div
+                className={cn("h-full rounded-full transition-all duration-500", depthColor)}
+                style={{ width: `${depthPct}%` }}
+              />
+            </div>
+            <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{Math.round(depthPct)}%</span>
           </div>
         </div>
 
-        {/* Capabilities */}
-        {queue.requiredCapabilities.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {queue.requiredCapabilities.map((cap) => (
-              <CapabilityBadge key={cap} capability={cap} />
-            ))}
-          </div>
-        )}
-      </CardHeader>
+        <div className="shrink-0 text-muted-foreground">
+          {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </div>
+      </button>
 
-      {/* Expandable task list */}
+      {/* Expanded content */}
       {expanded && (
-        <CardContent>
+        <div className="border-t px-4 py-3 bg-muted/20 animate-fade-in">
           {isPending ? (
             <div className="flex items-center justify-center py-6">
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -130,12 +122,10 @@ export function QueueCard({ queue, onTaskClick }: QueueCardProps) {
               ))}
             </div>
           ) : (
-            <p className="py-4 text-center text-sm text-muted-foreground">
-              No tasks in this queue.
-            </p>
+            <p className="text-sm text-muted-foreground text-center py-4">No tasks in queue</p>
           )}
-        </CardContent>
+        </div>
       )}
-    </Card>
+    </div>
   );
 }
